@@ -35,6 +35,7 @@ import { MOCK_PRESCRIPTIONS, MOCK_PATIENTS, MOCK_USERS, MOCK_BILLING, MOCK_PHARM
 import { FileText, Download, Eye } from 'lucide-react';
 import { useState, useMemo, useEffect } from 'react';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { Loader2 } from 'lucide-react';
 import { formatCurrency } from '@/lib/utils';
 import { 
@@ -65,22 +66,21 @@ export default function Dashboard() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [dbStats, setDbStats] = useState<any>(null);
 
-  useEffect(() => {
-    async function fetchData() {
-      setIsLoading(true);
-      const [patientsData, invoicesData, statsData] = await Promise.all([
-        supabaseService.getPatients(),
-        supabaseService.getInvoices(),
-        supabaseService.getDashboardStats()
-      ]);
+  const fetchData = async () => {
+    setIsLoading(true);
+    const [patientsData, invoicesData, statsData] = await Promise.all([
+      supabaseService.getPatients(),
+      supabaseService.getInvoices(),
+      supabaseService.getDashboardStats()
+    ]);
 
-      if (patientsData) setPatients(patientsData);
-      if (invoicesData) setInvoices(invoicesData);
-      if (statsData) setDbStats(statsData);
-      setIsLoading(false);
-    }
-    fetchData();
-  }, []);
+    if (patientsData) setPatients(patientsData);
+    if (invoicesData) setInvoices(invoicesData);
+    if (statsData) setDbStats(statsData);
+    setIsLoading(false);
+  };
+
+  useDataSync(fetchData);
 
   // Filter Logic
   const filteredBilling = useMemo(() => {

@@ -44,6 +44,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 
@@ -72,31 +73,31 @@ export default function Pharmacy() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   const [searchQuery, setSearchQuery] = useState('');
 
   const filteredInventory = useMemo(() => {
     return inventory.filter(item => 
       item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.category.toLowerCase().includes(searchQuery.toLowerCase())
+      (item.category && item.category.toLowerCase().includes(searchQuery.toLowerCase()))
     );
   }, [inventory, searchQuery]);
+
   const [newItem, setNewItem] = useState({ 
     name: '', 
     category: 'Medicine', 
     stock: 0, 
     unit: 'Tablets', 
-    minStockLevel: 10,
+    min_stock_level: 10,
     mrp: 0,
-    sellingPrice: 0,
-    purchasePrice: 0,
-    taxPercentage: 12,
-    hsnCode: '',
-    rackNumber: '',
-    batchNumber: '',
+    selling_price: 0,
+    purchase_price: 0,
+    tax_percentage: 12,
+    hsn_code: '',
+    rack_number: '',
+    batch_number: '',
+    expiry_date: '',
   });
   const [isPurchaseOpen, setIsPurchaseOpen] = useState(false);
   const [isAddStockOpen, setIsAddStockOpen] = useState(false);
@@ -111,16 +112,16 @@ export default function Pharmacy() {
       name: newItem.name,
       category: newItem.category,
       unit: newItem.unit,
-      hsn_code: newItem.hsnCode,
-      rack_number: newItem.rackNumber,
-      batch_number: newItem.batchNumber,
-      expiry_date: newItem.expiryDate || '2025-12-31',
+      hsn_code: newItem.hsn_code,
+      rack_number: newItem.rack_number,
+      batch_number: newItem.batch_number,
+      expiry_date: newItem.expiry_date || null,
       stock: Number(newItem.stock),
       mrp: Number(newItem.mrp),
-      selling_price: Number(newItem.sellingPrice),
-      purchase_price: Number(newItem.purchasePrice),
-      tax_percentage: Number(newItem.taxPercentage),
-      min_stock_level: Number(newItem.minStockLevel)
+      selling_price: Number(newItem.selling_price),
+      purchase_price: Number(newItem.purchase_price),
+      tax_percentage: Number(newItem.tax_percentage),
+      min_stock_level: Number(newItem.min_stock_level)
     };
     
     const result = await supabaseService.createPharmacyItem(itemToAdd);
@@ -132,23 +133,29 @@ export default function Pharmacy() {
         category: 'Medicine', 
         stock: 0, 
         unit: 'Tablets', 
-        minStockLevel: 10,
+        min_stock_level: 10,
         mrp: 0,
-        sellingPrice: 0,
-        purchasePrice: 0,
-        taxPercentage: 12,
-        hsnCode: '',
-        rackNumber: '',
-        batchNumber: '',
+        selling_price: 0,
+        purchase_price: 0,
+        tax_percentage: 12,
+        hsn_code: '',
+        rack_number: '',
+        batch_number: '',
+        expiry_date: '',
       });
     } else {
       toast.error('Failed to add item');
     }
   };
 
-  const handleDeleteItem = (id: string) => {
-    setInventory(inventory.filter(item => item.id !== id));
-    toast.success('Item removed from inventory');
+  const handleDeleteItem = async (id: string) => {
+    const success = await supabaseService.deletePharmacyItem(id);
+    if (success) {
+      setInventory(inventory.filter(item => item.id !== id));
+      toast.success('Item removed from inventory');
+    } else {
+      toast.error('Failed to delete item');
+    }
   };
 
   const printPharmacyInvoice = (bill: any) => {
@@ -158,7 +165,7 @@ export default function Pharmacy() {
       return;
     }
 
-    const patient = patients.find(p => p.id === bill.patientId);
+    const patient = patients.find(p => p.id === bill.patient_id);
 
     const invoiceHtml = `
       <html>
@@ -273,8 +280,8 @@ export default function Pharmacy() {
       item.category,
       item.stock,
       item.unit,
-      item.minStockLevel,
-      item.expiryDate || 'N/A'
+      item.min_stock_level,
+      item.expiry_date || 'N/A'
     ]);
     
     const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
@@ -299,15 +306,15 @@ export default function Pharmacy() {
     );
   }
 
-  const lowStockCount = inventory.filter(i => i.stock < i.min_stock_level).length;
+  const lowStockCount = inventory.filter(i => i.stock < (i.min_stock_level || 10)).length;
   const expiringSoonCount = inventory.filter(i => {
     if (!i.expiry_date) return false;
     const expiry = new Date(i.expiry_date);
     const today = new Date();
     const monthsDiff = (expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24 * 30);
-    return monthsDiff < 3;
+    return monthsDiff >= 0 && monthsDiff < 3;
   }).length;
-  const totalInvValue = inventory.reduce((acc, i) => acc + (i.stock * i.purchase_price), 0);
+  const totalInvValue = inventory.reduce((acc, i) => acc + (i.stock * (i.purchase_price || 0)), 0);
 
   return (
     <div className="p-6 space-y-6">
@@ -376,7 +383,7 @@ export default function Pharmacy() {
                         <Input 
                           type="number" 
                           id="purchase-price"
-                          defaultValue={editingItem.purchasePrice}
+                          defaultValue={editingItem.purchase_price}
                           placeholder="0.00" 
                         />
                       </div>
@@ -396,24 +403,24 @@ export default function Pharmacy() {
                         <Input 
                           type="number" 
                           id="purchase-sp"
-                          defaultValue={editingItem.sellingPrice}
+                          defaultValue={editingItem.selling_price}
                           placeholder="0.00" 
                         />
                       </div>
                     </div>
                     <div className="space-y-2">
                       <Label>Batch Number</Label>
-                      <Input id="purchase-batch" placeholder="Enter batch number" defaultValue={editingItem.batchNumber} />
+                      <Input id="purchase-batch" placeholder="Enter batch number" defaultValue={editingItem.batch_number} />
                     </div>
                     <div className="space-y-2">
                       <Label>Expiry Date</Label>
-                      <Input type="date" id="purchase-expiry" defaultValue={editingItem.expiryDate} />
+                      <Input type="date" id="purchase-expiry" defaultValue={editingItem.expiry_date} />
                     </div>
                   </>
                 )}
                 <div className="space-y-2">
                   <Label>Supplier Name</Label>
-                  <Input placeholder="Enter supplier name" />
+                  <Input placeholder="Enter supplier name" id="purchase-supplier" />
                 </div>
               </div>
               <DialogFooter>
@@ -421,38 +428,51 @@ export default function Pharmacy() {
                   setIsPurchaseOpen(false);
                   setEditingItem(null);
                 }}>Cancel</Button>
-                <Button className="bg-medical-blue" onClick={() => {
+                <Button className="bg-medical-blue" onClick={async () => {
                   if (!editingItem) {
                     toast.error('Please select an item');
                     return;
                   }
                   
                   const qtyToAdd = Number((document.getElementById('purchase-qty') as HTMLInputElement)?.value || 0);
-                  const newPP = Number((document.getElementById('purchase-price') as HTMLInputElement)?.value || editingItem.purchasePrice);
+                  const newPP = Number((document.getElementById('purchase-price') as HTMLInputElement)?.value || editingItem.purchase_price);
                   const newMRP = Number((document.getElementById('purchase-mrp') as HTMLInputElement)?.value || editingItem.mrp);
-                  const newSP = Number((document.getElementById('purchase-sp') as HTMLInputElement)?.value || editingItem.sellingPrice);
-                  const newBatch = (document.getElementById('purchase-batch') as HTMLInputElement)?.value || editingItem.batchNumber;
-                  const newExpiry = (document.getElementById('purchase-expiry') as HTMLInputElement)?.value || editingItem.expiryDate;
+                  const newSP = Number((document.getElementById('purchase-sp') as HTMLInputElement)?.value || editingItem.selling_price);
+                  const newBatch = (document.getElementById('purchase-batch') as HTMLInputElement)?.value || editingItem.batch_number;
+                  const newExpiry = (document.getElementById('purchase-expiry') as HTMLInputElement)?.value || editingItem.expiry_date;
+                  const supplier = (document.getElementById('purchase-supplier') as HTMLInputElement)?.value || 'N/A';
 
-                  const updatedInventory = inventory.map(item => {
-                    if (item.id === editingItem.id) {
-                      return {
-                        ...item,
-                        stock: item.stock + qtyToAdd,
-                        purchasePrice: newPP,
-                        mrp: newMRP,
-                        sellingPrice: newSP,
-                        batchNumber: newBatch,
-                        expiryDate: newExpiry
-                      };
-                    }
-                    return item;
-                  });
+                  const updates = {
+                    stock: editingItem.stock + qtyToAdd,
+                    purchase_price: newPP,
+                    mrp: newMRP,
+                    selling_price: newSP,
+                    batch_number: newBatch,
+                    expiry_date: newExpiry,
+                    updated_at: new Date().toISOString()
+                  };
+
+                  const result = await supabaseService.updatePharmacyItem(editingItem.id, updates);
                   
-                  setInventory(updatedInventory);
-                  toast.success('Stock purchase recorded and inventory updated');
-                  setIsPurchaseOpen(false);
-                  setEditingItem(null);
+                  if (result) {
+                    // Log the transaction
+                    await supabaseService.logInventoryTransaction({
+                      item_id: editingItem.id,
+                      transaction_type: 'PURCHASE',
+                      quantity: qtyToAdd,
+                      unit_price: newPP,
+                      total_price: qtyToAdd * newPP,
+                      reference_id: `SUP-${supplier}`,
+                      performed_by: currentUser?.id
+                    });
+
+                    toast.success('Stock purchase recorded and inventory updated');
+                    fetchData();
+                    setIsPurchaseOpen(false);
+                    setEditingItem(null);
+                  } else {
+                    toast.error('Failed to update stock');
+                  }
                 }}>Record Purchase</Button>
               </DialogFooter>
             </DialogContent>
@@ -524,16 +544,16 @@ export default function Pharmacy() {
                     <Input 
                       type="number" 
                       placeholder="10" 
-                      value={newItem.minStockLevel}
-                      onChange={(e) => setNewItem({...newItem, minStockLevel: Number(e.target.value)})}
+                      value={newItem.min_stock_level}
+                      onChange={(e) => setNewItem({...newItem, min_stock_level: Number(e.target.value)})}
                     />
                   </div>
                   <div className="space-y-2">
                     <Label>Rack No.</Label>
                     <Input 
                       placeholder="A-1" 
-                      value={newItem.rackNumber}
-                      onChange={(e) => setNewItem({...newItem, rackNumber: e.target.value})}
+                      value={newItem.rack_number}
+                      onChange={(e) => setNewItem({...newItem, rack_number: e.target.value})}
                     />
                   </div>
                 </div>
@@ -544,8 +564,8 @@ export default function Pharmacy() {
                     <Input 
                       type="number" 
                       placeholder="0.00" 
-                      value={newItem.purchasePrice}
-                      onChange={(e) => setNewItem({...newItem, purchasePrice: Number(e.target.value)})}
+                      value={newItem.purchase_price}
+                      onChange={(e) => setNewItem({...newItem, purchase_price: Number(e.target.value)})}
                     />
                   </div>
                   <div className="space-y-2">
@@ -564,15 +584,15 @@ export default function Pharmacy() {
                     <Input 
                       type="number" 
                       placeholder="0.00" 
-                      value={newItem.sellingPrice}
-                      onChange={(e) => setNewItem({...newItem, sellingPrice: Number(e.target.value)})}
+                      value={newItem.selling_price}
+                      onChange={(e) => setNewItem({...newItem, selling_price: Number(e.target.value)})}
                     />
                   </div>
                   <div className="space-y-2">
                     <Label>Tax Percentage (%)</Label>
                     <Select 
-                      value={newItem.taxPercentage.toString()}
-                      onValueChange={(v) => setNewItem({...newItem, taxPercentage: Number(v)})}
+                      value={newItem.tax_percentage.toString()}
+                      onValueChange={(v) => setNewItem({...newItem, tax_percentage: Number(v)})}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Select Tax" />
@@ -592,16 +612,16 @@ export default function Pharmacy() {
                     <Label>HSN Code</Label>
                     <Input 
                       placeholder="HSN" 
-                      value={newItem.hsnCode}
-                      onChange={(e) => setNewItem({...newItem, hsnCode: e.target.value})}
+                      value={newItem.hsn_code}
+                      onChange={(e) => setNewItem({...newItem, hsn_code: e.target.value})}
                     />
                   </div>
                   <div className="space-y-2">
                     <Label>Batch Number</Label>
                     <Input 
                       placeholder="Batch" 
-                      value={newItem.batchNumber}
-                      onChange={(e) => setNewItem({...newItem, batchNumber: e.target.value})}
+                      value={newItem.batch_number}
+                      onChange={(e) => setNewItem({...newItem, batch_number: e.target.value})}
                     />
                   </div>
                 </div>
@@ -609,7 +629,8 @@ export default function Pharmacy() {
                   <Label>Expiry Date</Label>
                   <Input 
                     type="date" 
-                    onChange={(e) => setNewItem({...newItem, expiryDate: e.target.value} as any)}
+                    value={newItem.expiry_date}
+                    onChange={(e) => setNewItem({...newItem, expiry_date: e.target.value})}
                   />
                 </div>
               </div>
@@ -713,7 +734,7 @@ export default function Pharmacy() {
                         <TableCell className="font-medium whitespace-nowrap">
                           <div>
                             <p>{item.name}</p>
-                            <p className="text-[10px] text-muted-foreground">Rack: {item.rackNumber || 'N/A'} | Batch: {item.batchNumber || 'N/A'}</p>
+                            <p className="text-[10px] text-muted-foreground">Rack: {item.rack_number || 'N/A'} | Batch: {item.batch_number || 'N/A'}</p>
                           </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
@@ -722,24 +743,24 @@ export default function Pharmacy() {
                         <TableCell className="whitespace-nowrap">
                           <div className="flex flex-col">
                             <span className="text-xs text-muted-foreground line-through">MRP: {formatCurrency(item.mrp || 0)}</span>
-                            <span className="font-bold text-medical-blue">SP: {formatCurrency(item.sellingPrice || 0)}</span>
-                            <span className="text-[10px] text-emerald-600">Tax: {item.taxPercentage || 0}%</span>
+                            <span className="font-bold text-medical-blue">SP: {formatCurrency(item.selling_price || 0)}</span>
+                            <span className="text-[10px] text-emerald-600">Tax: {item.tax_percentage || 0}%</span>
                           </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           <div className="flex flex-col">
                             <span className="font-bold">{item.stock} {item.unit}</span>
-                            <span className="text-[10px] text-muted-foreground">Min Level: {item.minStockLevel}</span>
+                            <span className="text-[10px] text-muted-foreground">Min Level: {item.min_stock_level || 0}</span>
                           </div>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                          {item.expiryDate ? formatDate(item.expiryDate) : 'N/A'}
+                          {item.expiry_date ? formatDate(item.expiry_date) : 'N/A'}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           <Badge variant="secondary" className={`border-none ${
-                            item.stock > item.minStockLevel ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'
+                            item.stock > (item.min_stock_level || 0) ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'
                           }`}>
-                            {item.stock > item.minStockLevel ? 'In Stock' : 'Low Stock'}
+                            {item.stock > (item.min_stock_level || 0) ? 'In Stock' : 'Low Stock'}
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap">
@@ -761,24 +782,16 @@ export default function Pharmacy() {
                                     <Label>Current Stock</Label>
                                     <Input 
                                       type="number" 
+                                      id={`stock-${item.id}`}
                                       defaultValue={item.stock} 
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updated = inventory.map((i: any) => i.id === item.id ? { ...i, stock: val } : i);
-                                        setInventory(updated);
-                                      }}
                                     />
                                   </div>
                                   <div className="space-y-2">
                                     <Label>Min Stock Level</Label>
                                     <Input 
                                       type="number" 
-                                      defaultValue={item.minStockLevel}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updated = inventory.map((i: any) => i.id === item.id ? { ...i, minStockLevel: val } : i);
-                                        setInventory(updated);
-                                      }}
+                                      id={`min-stock-${item.id}`}
+                                      defaultValue={item.min_stock_level}
                                     />
                                   </div>
                                 </div>
@@ -787,24 +800,16 @@ export default function Pharmacy() {
                                     <Label>MRP (₹)</Label>
                                     <Input 
                                       type="number" 
+                                      id={`mrp-${item.id}`}
                                       defaultValue={item.mrp}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updated = inventory.map((i: any) => i.id === item.id ? { ...i, mrp: val } : i);
-                                        setInventory(updated);
-                                      }}
                                     />
                                   </div>
                                   <div className="space-y-2">
                                     <Label>Selling Price (₹)</Label>
                                     <Input 
                                       type="number" 
-                                      defaultValue={item.sellingPrice}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updated = inventory.map((i: any) => i.id === item.id ? { ...i, sellingPrice: val } : i);
-                                        setInventory(updated);
-                                      }}
+                                      id={`selling-price-${item.id}`}
+                                      defaultValue={item.selling_price}
                                     />
                                   </div>
                                 </div>
@@ -812,23 +817,16 @@ export default function Pharmacy() {
                                   <div className="space-y-2">
                                     <Label>Batch Number</Label>
                                     <Input 
-                                      defaultValue={item.batchNumber}
-                                      onChange={(e) => {
-                                        const updated = inventory.map((i: any) => i.id === item.id ? { ...i, batchNumber: e.target.value } : i);
-                                        setInventory(updated);
-                                      }}
+                                      id={`batch-${item.id}`}
+                                      defaultValue={item.batch_number}
                                     />
                                   </div>
                                   <div className="space-y-2">
                                     <Label>Tax (%)</Label>
                                     <Input 
                                       type="number"
-                                      defaultValue={item.taxPercentage}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updated = inventory.map((i: any) => i.id === item.id ? { ...i, taxPercentage: val } : i);
-                                        setInventory(updated);
-                                      }}
+                                      id={`tax-${item.id}`}
+                                      defaultValue={item.tax_percentage}
                                     />
                                   </div>
                                 </div>
@@ -836,11 +834,8 @@ export default function Pharmacy() {
                                   <Label>Expiry Date</Label>
                                   <Input 
                                     type="date" 
-                                    defaultValue={item.expiryDate} 
-                                    onChange={(e) => {
-                                      const updated = inventory.map((i: any) => i.id === item.id ? { ...i, expiryDate: e.target.value } : i);
-                                      setInventory(updated);
-                                    }}
+                                    id={`expiry-${item.id}`}
+                                    defaultValue={item.expiry_date} 
                                   />
                                 </div>
                               </div>
@@ -859,13 +854,35 @@ export default function Pharmacy() {
                                   </Button>
                                 )}
                                 <div className="flex gap-2">
-                                  <DialogTrigger asChild>
-                                    <Button variant="outline">Cancel</Button>
-                                  </DialogTrigger>
+                                  <Button variant="outline" onClick={() => setEditingItem(null)}>Cancel</Button>
                                 {!isAccountant && (
-                                  <Button className="bg-medical-blue" onClick={() => {
-                                    toast.success('Stock updated successfully');
-                                    setEditingItem(null);
+                                  <Button className="bg-medical-blue" onClick={async () => {
+                                    const stock = Number((document.getElementById(`stock-${item.id}`) as HTMLInputElement)?.value);
+                                    const min_stock_level = Number((document.getElementById(`min-stock-${item.id}`) as HTMLInputElement)?.value);
+                                    const mrp = Number((document.getElementById(`mrp-${item.id}`) as HTMLInputElement)?.value);
+                                    const selling_price = Number((document.getElementById(`selling-price-${item.id}`) as HTMLInputElement)?.value);
+                                    const batch_number = (document.getElementById(`batch-${item.id}`) as HTMLInputElement)?.value;
+                                    const tax_percentage = Number((document.getElementById(`tax-${item.id}`) as HTMLInputElement)?.value);
+                                    const expiry_date = (document.getElementById(`expiry-${item.id}`) as HTMLInputElement)?.value;
+
+                                    const updates = {
+                                      stock,
+                                      min_stock_level,
+                                      mrp,
+                                      selling_price,
+                                      batch_number,
+                                      tax_percentage,
+                                      expiry_date
+                                    };
+
+                                    const result = await supabaseService.updatePharmacyItem(item.id, updates);
+                                    if (result) {
+                                      toast.success('Stock updated successfully');
+                                      fetchData();
+                                      setEditingItem(null);
+                                    } else {
+                                      toast.error('Failed to update stock');
+                                    }
                                   }}>Update Stock</Button>
                                 )}
                                 </div>
@@ -911,18 +928,18 @@ export default function Pharmacy() {
                   </TableHeader>
                   <TableBody>
                     {bills.map((bill) => {
-                      const patient = patients.find(p => p.id === bill.patientId);
+                      const patient = patients.find(p => p.id === bill.patient_id);
                       return (
                         <TableRow key={bill.id} className="border-slate-50">
                           <TableCell className="font-medium text-medical-blue whitespace-nowrap">#{bill.id.toUpperCase()}</TableCell>
                           <TableCell className="whitespace-nowrap">
                             <div>
                               <p className="font-medium text-sm">
-                                {bill.patientName || patient?.name || 'Walk-in Customer'}
+                                {bill.patient_name || patient?.name || 'Walk-in Customer'}
                               </p>
-                              {bill.patientPhone && <p className="text-[10px] text-muted-foreground">Ph: {bill.patientPhone}</p>}
-                              {bill.prescribingDoctor && <p className="text-[10px] text-medical-blue italic">Dr: {bill.prescribingDoctor}</p>}
-                              {!bill.patientPhone && patient?.mrn && <p className="text-xs text-muted-foreground">{patient.mrn}</p>}
+                              {bill.patient_phone && <p className="text-[10px] text-muted-foreground">Ph: {bill.patient_phone}</p>}
+                              {bill.prescribing_doctor && <p className="text-[10px] text-medical-blue italic">Dr: {bill.prescribing_doctor}</p>}
+                              {!bill.patient_phone && patient?.mrn && <p className="text-xs text-muted-foreground">{patient.mrn}</p>}
                             </div>
                           </TableCell>
                           <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{formatDate(bill.date)}</TableCell>

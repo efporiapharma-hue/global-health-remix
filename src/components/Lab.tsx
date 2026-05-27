@@ -26,7 +26,8 @@ import {
   FileCheck,
   Eye,
   Settings,
-  Loader2
+  Loader2,
+  Calendar
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,6 +45,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatDate, formatCurrency } from '@/lib/utils';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { 
   Dialog, 
   DialogContent, 
@@ -155,12 +157,22 @@ function LabQuickRegisterForm({ onRegistered }: { onRegistered: () => void }) {
 
 export default function Lab() {
   const [activeTab, setActiveTab] = useState<'pathology' | 'radiology' | 'external'>('pathology');
-  const [mainTab, setMainTab] = useState<'orders' | 'billing' | 'setup'>('orders');
+  const [mainTab, setMainTab] = useState<'orders' | 'billing' | 'appointments' | 'setup'>('orders');
   const [loading, setLoading] = useState(true);
   const [patients, setPatients] = useState<any[]>([]);
   const [labRates, setLabRates] = useState<any[]>([]);
   const [testOrders, setTestOrders] = useState<any[]>([]);
   const [bills, setBills] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [appointments, setAppointments] = useState<any[]>([]);
+  const [isBookingOpen, setIsBookingOpen] = useState(false);
+  const [newBooking, setNewBooking] = useState({
+    patientId: '',
+    type: 'LAB', // 'LAB' or 'RADIOLOGY'
+    date: new Date().toISOString().split('T')[0],
+    time: '10:00 AM',
+    urgency: 'Routine'
+  });
   
   // Test Setup states
   const [isTestSetupOpen, setIsTestSetupOpen] = useState(false);
@@ -173,6 +185,7 @@ export default function Lab() {
     unit: '',
     groupId: 'misc'
   });
+  
   const [templateImage, setTemplateImage] = useState<string | null>(() => storage.get(STORAGE_KEYS.TEMPLATE_IMAGE, null));
   const [hospitalInfo, setHospitalInfo] = useState(() => storage.get(STORAGE_KEYS.HOSPITAL_INFO, {
     name: 'GLOBAL HOSPITAL',
@@ -195,25 +208,38 @@ export default function Lab() {
 
   const fetchData = async () => {
     setLoading(true);
-    const [patientsData, testsData, ordersData, invoicesData] = await Promise.all([
+    const [patientsData, testsData, ordersData, radiologyData, invoicesData, appointmentsData] = await Promise.all([
       supabaseService.getPatients(),
       supabaseService.getLabTests(),
       supabaseService.getLabTestRequests(),
-      supabaseService.getInvoices()
+      supabaseService.getRadiologyRecords(),
+      supabaseService.getInvoices(),
+      supabaseService.getAppointments()
     ]);
 
     if (patientsData) setPatients(patientsData);
     if (testsData) setLabRates(testsData);
-    if (ordersData) setTestOrders(ordersData);
-    if (invoicesData) setBills(invoicesData.filter(inv => inv.invoice_items.some((item: any) => 
-      ['lab', 'path', 'radio'].includes(item.category.toLowerCase()))));
     
+    // Combine and normalize orders
+    const pathOrders = (ordersData || []).map(o => ({ ...o, category: 'pathology' }));
+    const radioOrders = (radiologyData || []).map(o => ({ 
+      ...o, 
+      category: 'radiology',
+      result_value: o.result_notes // Alias result_notes to result_value for shared UI
+    }));
+    setTestOrders([...pathOrders, ...radioOrders]);
+
+    if (invoicesData) setBills(invoicesData.filter(inv => inv.invoice_items?.some((item: any) => 
+      ['lab', 'path', 'radio'].includes(item.category?.toLowerCase()))));
+    
+    if (appointmentsData) {
+      setAppointments(appointmentsData.filter((a: any) => a.type === 'LAB' || a.type === 'RADIOLOGY'));
+    }
+
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   // All states are declared once at the top of Lab function
   const [testGroups, setTestGroups] = useState(() => storage.get('lab_test_groups', [
@@ -386,6 +412,13 @@ export default function Lab() {
   };
 
   const printReport = (test: any) => {
+    const templateImage = storage.get(STORAGE_KEYS.TEMPLATE_IMAGE, null);
+    const hospitalInfo = storage.get<{
+      name?: string;
+      address?: string;
+      phone?: string;
+      logo?: string | null;
+    }>(STORAGE_KEYS.HOSPITAL_INFO, {});
     const printWindow = window.open('', '_blank', 'width=800,height=600');
     if (!printWindow) {
       toast.error('Please allow popups to print report');
@@ -397,7 +430,7 @@ export default function Lab() {
         <head>
           <title>Laboratory Report - ${test.id}</title>
           <style>
-            @page { margin: 10mm; }
+            @page { margin: 10mm; size: A4; }
             body { 
               font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
               margin: 0; 
@@ -406,17 +439,19 @@ export default function Lab() {
               line-height: 1.5;
             }
             .template-bg {
-              position: absolute;
+              position: fixed;
               top: 0;
               left: 0;
               width: 100%;
-              height: auto;
+              height: 100%;
               z-index: -1;
             }
             .content { 
               position: relative;
-              padding-top: ${templateImage ? '220px' : '20px'}; 
+              padding-top: ${templateImage ? '260px' : '20px'}; 
+              padding-bottom: ${templateImage ? '100px' : '20px'};
               margin: 0 40px;
+              z-index: 10;
             }
             .hospital-header {
               text-align: center;
@@ -552,6 +587,13 @@ export default function Lab() {
   };
 
   const printBill = (bill: any) => {
+    const templateImage = storage.get(STORAGE_KEYS.TEMPLATE_IMAGE, null);
+    const hospitalInfo = storage.get<{
+      name?: string;
+      address?: string;
+      phone?: string;
+      logo?: string | null;
+    }>(STORAGE_KEYS.HOSPITAL_INFO, {});
     const printWindow = window.open('', '_blank', 'width=800,height=600');
     if (!printWindow) {
       toast.error('Please allow popups to print bill');
@@ -563,33 +605,38 @@ export default function Lab() {
         <head>
           <title>Lab Bill - ${bill.id}</title>
           <style>
-            @page { margin: 10mm; }
+            @page { margin: 10mm; size: A4; }
             body { 
               font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
               margin: 0; 
               padding: 0;
               color: #1e293b;
+              line-height: 1.5;
             }
             .template-bg {
-              position: absolute;
+              position: fixed;
               top: 0;
               left: 0;
               width: 100%;
-              height: auto;
+              height: 100%;
               z-index: -1;
             }
             .content { 
               position: relative;
-              padding-top: ${templateImage ? '220px' : '20px'}; 
+              padding-top: ${templateImage ? '260px' : '20px'}; 
+              padding-bottom: ${templateImage ? '100px' : '20px'};
               margin: 0 40px;
+              z-index: 10;
             }
             .hospital-header {
               text-align: center;
               margin-bottom: 30px;
               display: ${templateImage ? 'none' : 'block'};
+              border-bottom: 2px solid #2563eb;
+              padding-bottom: 15px;
             }
-            .hospital-name { font-size: 28px; font-weight: 800; color: #2563eb; }
-            .bill-title { text-align: center; font-size: 22px; font-weight: 800; margin: 20px 0; text-transform: uppercase; }
+            .hospital-name { font-size: 28px; font-weight: 800; color: #2563eb; letter-spacing: -0.025em; }
+            .bill-title { text-align: center; font-size: 22px; font-weight: 800; margin: 20px 0; text-transform: uppercase; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
             .bill-info { 
               display: flex; 
               justify-content: space-between; 
@@ -599,8 +646,8 @@ export default function Lab() {
               border-radius: 12px;
               border: 1px solid #e2e8f0;
             }
-            .bill-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 30px; }
-            .bill-table th { text-align: left; padding: 12px; border-bottom: 2px solid #e2e8f0; font-size: 12px; text-transform: uppercase; }
+            .bill-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 40px; }
+            .bill-table th { text-align: left; background-color: #f1f5f9; padding: 12px; border-bottom: 2px solid #e2e8f0; font-size: 12px; text-transform: uppercase; font-weight: 700; }
             .bill-table td { padding: 15px 12px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
             .total-section { text-align: right; margin-top: 30px; padding-top: 20px; border-top: 2px solid #0f172a; }
             .total-label { font-size: 16px; font-weight: 600; color: #64748b; }
@@ -652,7 +699,7 @@ export default function Lab() {
               <div style="font-size: 12px; color: #059669; font-weight: 700; margin-top: 5px;">Status: PAID</div>
             </div>
 
-            <div style="margin-top: 60px; text-align: center; font-size: 11px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 20px;">
+            <div style="margin-top: 80px; text-align: center; font-size: 11px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 20px;">
               Thank you for choosing Global Hospital Diagnostics. Get well soon!
             </div>
           </div>
@@ -685,6 +732,61 @@ export default function Lab() {
     document.body.removeChild(a);
     toast.success('Lab billing data exported');
   };
+
+  const stats = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const todayBills = bills.filter(b => b.created_at?.startsWith(today));
+    const totalCollection = todayBills.reduce((sum, b) => sum + (b.paid_amount || 0), 0);
+    const pendingBills = bills.filter(b => b.status === 'Pending').length;
+    return {
+      todayCollection: totalCollection,
+      pendingCount: pendingBills,
+      totalBilled: bills.length
+    };
+  }, [bills]);
+
+  const filteredOrders = useMemo(() => {
+    return testOrders.filter(order => {
+      // Category filter
+      if (activeTab === 'pathology' && order.category !== 'pathology') return false;
+      if (activeTab === 'radiology' && order.category !== 'radiology') return false;
+      if (activeTab === 'external') return false; // Handled by externalReports state separately in UI
+
+      const searchStr = searchQuery.toLowerCase();
+      const patient = patients.find(p => p.id === order.patient_id);
+      
+      return (
+        order.test_name?.toLowerCase().includes(searchStr) ||
+        patient?.name?.toLowerCase().includes(searchStr) ||
+        patient?.mrn?.toLowerCase().includes(searchStr)
+      );
+    });
+  }, [testOrders, activeTab, searchQuery, patients]);
+
+  const labStats = useMemo(() => {
+    return {
+      pending: testOrders.filter(t => t.status === 'Ordered').length,
+      processing: testOrders.filter(t => t.status === 'Processing').length,
+      completed: testOrders.filter(t => t.status === 'Completed').length,
+      critical: testOrders.filter(t => {
+        const resValue = t.result_value || '';
+        const refRange = t.reference_range || '';
+        if (!resValue || !refRange) return false;
+        
+        // Basic check for numeric values out of range
+        const val = parseFloat(resValue);
+        if (isNaN(val)) return false;
+        
+        const rangeMatch = refRange.match(/(\d+\.?\d*)\s*-\s*(\d+\.?\d*)/);
+        if (rangeMatch) {
+          const min = parseFloat(rangeMatch[1]);
+          const max = parseFloat(rangeMatch[2]);
+          return val < min || val > max;
+        }
+        return false;
+      }).length
+    };
+  }, [testOrders]);
 
   if (loading) {
     return (
@@ -730,6 +832,98 @@ export default function Lab() {
             <Settings className="w-4 h-4" />
             Master Setup
           </Button>
+          <Button 
+            variant={mainTab === 'appointments' ? 'secondary' : 'outline'} 
+            className="gap-2"
+            onClick={() => setMainTab(mainTab === 'appointments' ? 'orders' : 'appointments')}
+          >
+            <Calendar className="w-4 h-4" />
+            Appointments
+          </Button>
+          <Dialog open={isBookingOpen} onOpenChange={setIsBookingOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline" className="gap-2 border-indigo-600 text-indigo-600 hover:bg-indigo-50">
+                <Clock className="w-4 h-4" />
+                Book Slot
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[400px]">
+              <DialogHeader>
+                <DialogTitle>Book Diagnostic Slot</DialogTitle>
+                <DialogDescription>Schedule a time for Lab or Radiology tests.</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2 relative">
+                  <Label>Patient</Label>
+                  <div className="relative">
+                    <Input 
+                      placeholder="Search patient..." 
+                      value={patientSearchTerm}
+                      onChange={(e) => {
+                        setPatientSearchTerm(e.target.value);
+                        setShowPatientResults(true);
+                      }}
+                    />
+                    {showPatientResults && patientSearchTerm.length > 0 && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-[200px] overflow-y-auto">
+                        {patients.filter(p => p.name.toLowerCase().includes(patientSearchTerm.toLowerCase())).map(p => (
+                          <div 
+                            key={p.id} 
+                            className="px-4 py-2 hover:bg-slate-50 cursor-pointer"
+                            onClick={() => {
+                              setNewBooking({...newBooking, patientId: p.id});
+                              setPatientSearchTerm(p.name);
+                              setShowPatientResults(false);
+                            }}
+                          >
+                            <p className="text-sm font-medium">{p.name}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Service Type</Label>
+                  <Select value={newBooking.type} onValueChange={(v) => setNewBooking({...newBooking, type: v})}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="LAB">Laboratory</SelectItem>
+                      <SelectItem value="RADIOLOGY">Radiology</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Date</Label>
+                    <Input type="date" value={newBooking.date} onChange={(e) => setNewBooking({...newBooking, date: e.target.value})} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Time</Label>
+                    <Input placeholder="10:00 AM" value={newBooking.time} onChange={(e) => setNewBooking({...newBooking, time: e.target.value})} />
+                  </div>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button className="bg-medical-blue w-full" onClick={async () => {
+                  if (!newBooking.patientId) return toast.error('Select patient');
+                  const result = await supabaseService.createAppointment({
+                    patient_id: newBooking.patientId,
+                    type: newBooking.type,
+                    appointment_date: newBooking.date,
+                    appointment_time: newBooking.time,
+                    urgency: newBooking.urgency,
+                    status: 'Scheduled'
+                  });
+                  if (result) {
+                    toast.success('Appointment booked');
+                    setIsBookingOpen(false);
+                    fetchData();
+                  }
+                }}>Confirm Booking</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <Button 
             variant={mainTab === 'billing' ? 'secondary' : 'outline'} 
             className="gap-2"
@@ -809,7 +1003,7 @@ export default function Lab() {
                       )}
                     </div>
                   )}
-
+ 
                   {newTestOrder.patientId && (
                     <div className="mt-2 p-2 bg-blue-50 border border-blue-100 rounded-md flex items-center gap-3 animate-in fade-in slide-in-from-top-1">
                       <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 shrink-0">
@@ -885,6 +1079,10 @@ export default function Lab() {
                       return;
                     }
                     const masterTest = labRates.find((t: any) => t.name === newTestOrder.testName);
+                    const isRadiology = masterTest?.category?.toLowerCase() === 'radiology' || 
+                                       newTestOrder.testName.toLowerCase().includes('x-ray') || 
+                                       newTestOrder.testName.toLowerCase().includes('scan');
+                    
                     const newOrder = {
                       patient_id: newTestOrder.patientId,
                       test_name: newTestOrder.testName,
@@ -893,9 +1091,13 @@ export default function Lab() {
                       unit: masterTest?.unit || '',
                       urgency: newTestOrder.urgency
                     };
-                    const result = await supabaseService.createLabTestRequest(newOrder);
+
+                    const result = isRadiology 
+                      ? await supabaseService.createRadiologyRecord({ ...newOrder, result_notes: '' })
+                      : await supabaseService.createLabTestRequest(newOrder);
+
                     if (result) {
-                      setTestOrders([result, ...testOrders]);
+                      setTestOrders([{...result, category: isRadiology ? 'radiology' : 'pathology'}, ...testOrders]);
                       toast.success('Test order placed successfully');
                       setIsNewTestOpen(false);
                       fetchData();
@@ -911,7 +1113,7 @@ export default function Lab() {
           </Dialog>
         </div>
       </div>
-
+ 
       {mainTab === 'orders' ? (
         <>
           <div className="flex gap-1 bg-slate-100 p-1 rounded-lg w-fit">
@@ -940,30 +1142,30 @@ export default function Lab() {
               External Reports
             </Button>
           </div>
-
+ 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <Card className="border-none shadow-sm">
               <CardContent className="p-4">
                 <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider mb-1">Pending Samples</p>
-                <h3 className="text-xl font-bold text-amber-600">12</h3>
+                <h3 className="text-xl font-bold text-amber-600">{labStats.pending}</h3>
               </CardContent>
             </Card>
             <Card className="border-none shadow-sm">
               <CardContent className="p-4">
                 <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider mb-1">In Processing</p>
-                <h3 className="text-xl font-bold text-blue-600">8</h3>
+                <h3 className="text-xl font-bold text-blue-600">{labStats.processing}</h3>
               </CardContent>
             </Card>
             <Card className="border-none shadow-sm">
               <CardContent className="p-4">
                 <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider mb-1">Reports Ready</p>
-                <h3 className="text-xl font-bold text-emerald-600">24</h3>
+                <h3 className="text-xl font-bold text-emerald-600">{labStats.completed}</h3>
               </CardContent>
             </Card>
             <Card className="border-none shadow-sm">
               <CardContent className="p-4">
                 <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider mb-1">Critical Results</p>
-                <h3 className="text-xl font-bold text-rose-600">2</h3>
+                <h3 className="text-xl font-bold text-rose-600">{labStats.critical}</h3>
               </CardContent>
             </Card>
           </div>
@@ -974,7 +1176,12 @@ export default function Lab() {
               <div className="flex items-center gap-2">
                 <div className="relative w-64">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input placeholder="Search patient or MRN..." className="pl-10 bg-slate-50 border-none h-9" />
+                  <Input 
+                    placeholder="Search patient or MRN..." 
+                    className="pl-10 bg-slate-50 border-none h-9" 
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
                 </div>
                 <Button variant="outline" size="sm" className="h-9">
                   <Filter className="w-4 h-4 mr-2" />
@@ -1038,7 +1245,7 @@ export default function Lab() {
                           </TableRow>
                         ))
                       )
-                    ) : testOrders.filter(t => activeTab === 'pathology' ? !t.test_name.toLowerCase().includes('x-ray') && !t.test_name.toLowerCase().includes('usg') : t.test_name.toLowerCase().includes('x-ray') || t.test_name.toLowerCase().includes('usg')).map((test: any) => {
+                    ) : filteredOrders.map((test: any) => {
                       const resStatus = getResultStatus(test.result_value || '', test.reference_range || '');
                       return (
                         <TableRow key={test.id} className="border-slate-50">
@@ -1362,25 +1569,72 @@ export default function Lab() {
             </Card>
           </div>
         </div>
-      ) : (
+      ) : mainTab === 'appointments' ? (
+        <Card className="border-none shadow-sm">
+          <CardHeader>
+            <CardTitle>Scheduled Diagnostic Slots</CardTitle>
+            <CardDescription>Appointments booked specifically for Lab & Radiology tests.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Patient</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Time</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {appointments.length > 0 ? (
+                    appointments.map((apt: any) => (
+                      <TableRow key={apt.id}>
+                        <TableCell>
+                          <Badge variant="outline" className={apt.type === 'RADIOLOGY' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-blue-50 text-blue-600 border-blue-100'}>
+                            {apt.type}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="font-bold">{apt.patients?.name || 'Loading...'}</TableCell>
+                        <TableCell>{formatDate(apt.appointment_date)}</TableCell>
+                        <TableCell>{apt.appointment_time}</TableCell>
+                        <TableCell>
+                          <Badge className={apt.status === 'Completed' ? 'bg-emerald-500' : 'bg-sky-500'}>
+                            {apt.status}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={5} className="h-24 text-center text-muted-foreground italic">No appointments found.</TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      ) : mainTab === 'billing' ? (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Card className="border-none shadow-sm">
+            <Card className="border-none shadow-sm text-white bg-gradient-to-br from-purple-600 to-indigo-700">
               <CardContent className="p-6">
-                <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider mb-1">Today's Lab Collection</p>
-                <h3 className="text-3xl font-bold text-purple-600">₹25,500</h3>
+                <p className="text-xs text-white/70 font-bold uppercase tracking-wider mb-1">Today's Lab Collection</p>
+                <h3 className="text-3xl font-black">{formatCurrency(stats.todayCollection)}</h3>
               </CardContent>
             </Card>
-            <Card className="border-none shadow-sm">
+            <Card className="border-none shadow-sm text-white bg-gradient-to-br from-amber-500 to-orange-600">
               <CardContent className="p-6">
-                <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider mb-1">Pending Lab Bills</p>
-                <h3 className="text-3xl font-bold text-amber-600">₹4,200</h3>
+                <p className="text-xs text-white/70 font-bold uppercase tracking-wider mb-1">Pending Lab Bills</p>
+                <h3 className="text-3xl font-black">{stats.pendingCount}</h3>
               </CardContent>
             </Card>
-            <Card className="border-none shadow-sm">
+            <Card className="border-none shadow-sm text-white bg-gradient-to-br from-blue-600 to-sky-700">
               <CardContent className="p-6">
-                <p className="text-xs text-muted-foreground font-bold uppercase tracking-wider mb-1">Total Tests Billed</p>
-                <h3 className="text-3xl font-bold text-blue-600">42</h3>
+                <p className="text-xs text-white/70 font-bold uppercase tracking-wider mb-1">Total Tests Billed</p>
+                <h3 className="text-3xl font-black">{stats.totalBilled}</h3>
               </CardContent>
             </Card>
           </div>
@@ -1672,7 +1926,7 @@ export default function Lab() {
             </CardContent>
           </Card>
         </div>
-      )}
+      ) : null}
       <Dialog open={isResultDialogOpen} onOpenChange={setIsResultDialogOpen}>
         <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>

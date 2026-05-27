@@ -135,6 +135,23 @@ CREATE TABLE IF NOT EXISTS public.clinical_notes (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 8.1 Prescriptions
+CREATE TABLE IF NOT EXISTS public.prescriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID REFERENCES public.patients(id) ON DELETE CASCADE,
+  doctor_id UUID REFERENCES public.profiles(id),
+  doctor_name TEXT,
+  prescription_date TIMESTAMPTZ DEFAULT NOW(),
+  diagnosis TEXT,
+  advice TEXT,
+  medicines JSONB DEFAULT '[]'::jsonb,
+  medications JSONB DEFAULT '[]'::jsonb,
+  attachment_url TEXT,
+  attachment_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 9. Investigations & Lab Tests
 CREATE TABLE IF NOT EXISTS public.lab_tests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -235,6 +252,21 @@ CREATE TABLE IF NOT EXISTS public.invoice_items (
   source_id UUID -- Link to the specific record in lab_tests, pharmacy_items, etc.
 );
 
+-- 11.1 Insurance Claims
+CREATE TABLE IF NOT EXISTS public.insurance_claims (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  patient_id UUID REFERENCES public.patients(id) ON DELETE CASCADE,
+  policy_no TEXT NOT NULL,
+  insurance_company TEXT NOT NULL,
+  tpa_name TEXT,
+  insurance_limit DECIMAL(10, 2) DEFAULT 0.00,
+  approved_amount DECIMAL(10, 2) DEFAULT 0.00,
+  claim_date DATE,
+  status TEXT DEFAULT 'Pending',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 12. Expenses
 CREATE TABLE IF NOT EXISTS public.expenses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -261,15 +293,30 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 13.1 OT Rooms (Operation Theatre rooms)
+CREATE TABLE IF NOT EXISTS public.ot_rooms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE,
+  status TEXT DEFAULT 'Available',
+  type TEXT DEFAULT 'Major',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 14. OT Management (Operation Theater)
 CREATE TABLE IF NOT EXISTS public.ot_schedules (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   patient_id UUID REFERENCES public.patients(id) ON DELETE CASCADE,
-  procedure_name TEXT NOT NULL,
-  surgery_date DATE NOT NULL,
-  surgery_time TIME NOT NULL,
+  room_id UUID REFERENCES public.ot_rooms(id) ON DELETE SET NULL,
+  ot_rooms_id UUID REFERENCES public.ot_rooms(id) ON DELETE SET NULL,
   surgeon_id UUID REFERENCES public.profiles(id),
   anesthetist_id UUID REFERENCES public.profiles(id),
+  procedure_name TEXT,
+  operation_name TEXT,
+  surgery_date DATE,
+  scheduled_date DATE,
+  surgery_time TIME,
+  scheduled_time TIME,
   ot_number TEXT,
   status TEXT DEFAULT 'Scheduled', -- Scheduled, In-Progress, Completed, Cancelled
   notes TEXT,
@@ -286,6 +333,17 @@ CREATE TABLE IF NOT EXISTS public.nursing_notes (
   alert_level TEXT DEFAULT 'normal' CHECK (alert_level IN ('normal', 'moderate', 'high')),
   is_medication_intake BOOLEAN DEFAULT FALSE,
   is_patient_request BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 15.1 Nurse Shifts
+CREATE TABLE IF NOT EXISTS public.nurse_shifts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nurse_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  shift_type TEXT NOT NULL, -- Morning, Evening, Night
+  ward TEXT NOT NULL,
+  status TEXT DEFAULT 'Active',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -365,6 +423,7 @@ ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.patient_vitals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.clinical_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.prescriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lab_tests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.test_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pharmacy_items ENABLE ROW LEVEL SECURITY;
@@ -373,8 +432,11 @@ ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.invoice_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.insurance_claims ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ot_rooms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ot_schedules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.nursing_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.nurse_shifts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lab_test_groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lab_packages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lab_package_items ENABLE ROW LEVEL SECURITY;
@@ -382,84 +444,297 @@ ALTER TABLE public.pharmacy_purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.birth_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.external_reports ENABLE ROW LEVEL SECURITY;
 
--- Basic RLS Policies (Allow authenticated read access as a starting point)
+-- Basic RLS Policies (Allow authenticated read/write access for internal staff operations)
+
+-- Profiles Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.profiles;
 CREATE POLICY "Enable read access for authenticated users" ON public.profiles FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.profiles;
+CREATE POLICY "Enable insert for authenticated users" ON public.profiles FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.profiles;
+CREATE POLICY "Enable update for authenticated users" ON public.profiles FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.profiles;
+CREATE POLICY "Enable delete for authenticated users" ON public.profiles FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.patients;
-CREATE POLICY "Enable read access for authenticated users" ON public.patients FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.patients;
-CREATE POLICY "Enable insert for authenticated users" ON public.patients FOR INSERT TO authenticated WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.patients;
-CREATE POLICY "Enable update for authenticated users" ON public.patients FOR UPDATE TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.patients;
-CREATE POLICY "Enable delete for authenticated users" ON public.patients FOR DELETE TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.departments;
-CREATE POLICY "Enable read access for authenticated users" ON public.departments FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.beds;
-CREATE POLICY "Enable read access for authenticated users" ON public.beds FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.pharmacy_items;
-CREATE POLICY "Enable read access for authenticated users" ON public.pharmacy_items FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.ot_schedules;
-CREATE POLICY "Enable read access for authenticated users" ON public.ot_schedules FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.nursing_notes;
-CREATE POLICY "Enable read access for authenticated users" ON public.nursing_notes FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.lab_test_groups;
-CREATE POLICY "Enable read access for authenticated users" ON public.lab_test_groups FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.lab_packages;
-CREATE POLICY "Enable read access for authenticated users" ON public.lab_packages FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.external_reports;
-CREATE POLICY "Enable read access for authenticated users" ON public.external_reports FOR SELECT TO authenticated USING (true);
-
+-- Hospital Info Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.hospital_info;
 CREATE POLICY "Enable read access for authenticated users" ON public.hospital_info FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.hospital_info;
+CREATE POLICY "Enable insert for authenticated users" ON public.hospital_info FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.hospital_info;
+CREATE POLICY "Enable update for authenticated users" ON public.hospital_info FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.hospital_info;
+CREATE POLICY "Enable delete for authenticated users" ON public.hospital_info FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Departments Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.departments;
+CREATE POLICY "Enable read access for authenticated users" ON public.departments FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.departments;
+CREATE POLICY "Enable insert for authenticated users" ON public.departments FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.departments;
+CREATE POLICY "Enable update for authenticated users" ON public.departments FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.departments;
+CREATE POLICY "Enable delete for authenticated users" ON public.departments FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Patients Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.patients;
+CREATE POLICY "Enable read access for authenticated users" ON public.patients FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.patients;
+CREATE POLICY "Enable insert for authenticated users" ON public.patients FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.patients;
+CREATE POLICY "Enable update for authenticated users" ON public.patients FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.patients;
+CREATE POLICY "Enable delete for authenticated users" ON public.patients FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Beds Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.beds;
+CREATE POLICY "Enable read access for authenticated users" ON public.beds FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.beds;
+CREATE POLICY "Enable insert for authenticated users" ON public.beds FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.beds;
+CREATE POLICY "Enable update for authenticated users" ON public.beds FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.beds;
+CREATE POLICY "Enable delete for authenticated users" ON public.beds FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Appointments Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.appointments;
+CREATE POLICY "Enable read access for authenticated users" ON public.appointments FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.appointments;
+CREATE POLICY "Enable insert for authenticated users" ON public.appointments FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.appointments;
+CREATE POLICY "Enable update for authenticated users" ON public.appointments FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.appointments;
+CREATE POLICY "Enable delete for authenticated users" ON public.appointments FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Admissions Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.admissions;
 CREATE POLICY "Enable read access for authenticated users" ON public.admissions FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.admissions;
+CREATE POLICY "Enable insert for authenticated users" ON public.admissions FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.admissions;
+CREATE POLICY "Enable update for authenticated users" ON public.admissions FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.admissions;
+CREATE POLICY "Enable delete for authenticated users" ON public.admissions FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Patient Vitals Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.patient_vitals;
 CREATE POLICY "Enable read access for authenticated users" ON public.patient_vitals FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.patient_vitals;
+CREATE POLICY "Enable insert for authenticated users" ON public.patient_vitals FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.patient_vitals;
+CREATE POLICY "Enable update for authenticated users" ON public.patient_vitals FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.patient_vitals;
+CREATE POLICY "Enable delete for authenticated users" ON public.patient_vitals FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Clinical Notes Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.clinical_notes;
 CREATE POLICY "Enable read access for authenticated users" ON public.clinical_notes FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.clinical_notes;
+CREATE POLICY "Enable insert for authenticated users" ON public.clinical_notes FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.clinical_notes;
+CREATE POLICY "Enable update for authenticated users" ON public.clinical_notes FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.clinical_notes;
+CREATE POLICY "Enable delete for authenticated users" ON public.clinical_notes FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Prescriptions Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.prescriptions;
+CREATE POLICY "Enable read access for authenticated users" ON public.prescriptions FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.prescriptions;
+CREATE POLICY "Enable insert for authenticated users" ON public.prescriptions FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.prescriptions;
+CREATE POLICY "Enable update for authenticated users" ON public.prescriptions FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.prescriptions;
+CREATE POLICY "Enable delete for authenticated users" ON public.prescriptions FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Lab Tests Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.lab_tests;
 CREATE POLICY "Enable read access for authenticated users" ON public.lab_tests FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.lab_tests;
+CREATE POLICY "Enable insert for authenticated users" ON public.lab_tests FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.lab_tests;
+CREATE POLICY "Enable update for authenticated users" ON public.lab_tests FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.lab_tests;
+CREATE POLICY "Enable delete for authenticated users" ON public.lab_tests FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Test Requests Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.test_requests;
 CREATE POLICY "Enable read access for authenticated users" ON public.test_requests FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.test_requests;
+CREATE POLICY "Enable insert for authenticated users" ON public.test_requests FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.test_requests;
+CREATE POLICY "Enable update for authenticated users" ON public.test_requests FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.test_requests;
+CREATE POLICY "Enable delete for authenticated users" ON public.test_requests FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.invoices;
-CREATE POLICY "Enable read access for authenticated users" ON public.invoices FOR SELECT TO authenticated USING (true);
+-- Pharmacy Items Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.pharmacy_items;
+CREATE POLICY "Enable read access for authenticated users" ON public.pharmacy_items FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.pharmacy_items;
+CREATE POLICY "Enable insert for authenticated users" ON public.pharmacy_items FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.pharmacy_items;
+CREATE POLICY "Enable update for authenticated users" ON public.pharmacy_items FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.pharmacy_items;
+CREATE POLICY "Enable delete for authenticated users" ON public.pharmacy_items FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.invoice_items;
-CREATE POLICY "Enable read access for authenticated users" ON public.invoice_items FOR SELECT TO authenticated USING (true);
-
-DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.birth_records;
-CREATE POLICY "Enable read access for authenticated users" ON public.birth_records FOR SELECT TO authenticated USING (true);
-
+-- Pharmacy Purchases Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.pharmacy_purchases;
 CREATE POLICY "Enable read access for authenticated users" ON public.pharmacy_purchases FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.pharmacy_purchases;
+CREATE POLICY "Enable insert for authenticated users" ON public.pharmacy_purchases FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.pharmacy_purchases;
+CREATE POLICY "Enable update for authenticated users" ON public.pharmacy_purchases FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.pharmacy_purchases;
+CREATE POLICY "Enable delete for authenticated users" ON public.pharmacy_purchases FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Inventory Transactions Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.inventory_transactions;
 CREATE POLICY "Enable read access for authenticated users" ON public.inventory_transactions FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.inventory_transactions;
+CREATE POLICY "Enable insert for authenticated users" ON public.inventory_transactions FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.inventory_transactions;
+CREATE POLICY "Enable update for authenticated users" ON public.inventory_transactions FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.inventory_transactions;
+CREATE POLICY "Enable delete for authenticated users" ON public.inventory_transactions FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Invoices Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.invoices;
+CREATE POLICY "Enable read access for authenticated users" ON public.invoices FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.invoices;
+CREATE POLICY "Enable insert for authenticated users" ON public.invoices FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.invoices;
+CREATE POLICY "Enable update for authenticated users" ON public.invoices FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.invoices;
+CREATE POLICY "Enable delete for authenticated users" ON public.invoices FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Invoice Items Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.invoice_items;
+CREATE POLICY "Enable read access for authenticated users" ON public.invoice_items FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.invoice_items;
+CREATE POLICY "Enable insert for authenticated users" ON public.invoice_items FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.invoice_items;
+CREATE POLICY "Enable update for authenticated users" ON public.invoice_items FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.invoice_items;
+CREATE POLICY "Enable delete for authenticated users" ON public.invoice_items FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Insurance Claims Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.insurance_claims;
+CREATE POLICY "Enable read access for authenticated users" ON public.insurance_claims FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.insurance_claims;
+CREATE POLICY "Enable insert for authenticated users" ON public.insurance_claims FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.insurance_claims;
+CREATE POLICY "Enable update for authenticated users" ON public.insurance_claims FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.insurance_claims;
+CREATE POLICY "Enable delete for authenticated users" ON public.insurance_claims FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Expenses Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.expenses;
 CREATE POLICY "Enable read access for authenticated users" ON public.expenses FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.expenses;
+CREATE POLICY "Enable insert for authenticated users" ON public.expenses FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.expenses;
+CREATE POLICY "Enable update for authenticated users" ON public.expenses FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.expenses;
+CREATE POLICY "Enable delete for authenticated users" ON public.expenses FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
+-- Audit Logs Policies
 DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.audit_logs;
 CREATE POLICY "Enable read access for authenticated users" ON public.audit_logs FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.audit_logs;
+CREATE POLICY "Enable insert for authenticated users" ON public.audit_logs FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.audit_logs;
+CREATE POLICY "Enable update for authenticated users" ON public.audit_logs FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.audit_logs;
+CREATE POLICY "Enable delete for authenticated users" ON public.audit_logs FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- OT Rooms Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.ot_rooms;
+CREATE POLICY "Enable read access for authenticated users" ON public.ot_rooms FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.ot_rooms;
+CREATE POLICY "Enable insert for authenticated users" ON public.ot_rooms FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.ot_rooms;
+CREATE POLICY "Enable update for authenticated users" ON public.ot_rooms FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.ot_rooms;
+CREATE POLICY "Enable delete for authenticated users" ON public.ot_rooms FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- OT Schedules Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.ot_schedules;
+CREATE POLICY "Enable read access for authenticated users" ON public.ot_schedules FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.ot_schedules;
+CREATE POLICY "Enable insert for authenticated users" ON public.ot_schedules FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.ot_schedules;
+CREATE POLICY "Enable update for authenticated users" ON public.ot_schedules FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.ot_schedules;
+CREATE POLICY "Enable delete for authenticated users" ON public.ot_schedules FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Nursing Notes Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.nursing_notes;
+CREATE POLICY "Enable read access for authenticated users" ON public.nursing_notes FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.nursing_notes;
+CREATE POLICY "Enable insert for authenticated users" ON public.nursing_notes FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.nursing_notes;
+CREATE POLICY "Enable update for authenticated users" ON public.nursing_notes FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.nursing_notes;
+CREATE POLICY "Enable delete for authenticated users" ON public.nursing_notes FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Nurse Shifts Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.nurse_shifts;
+CREATE POLICY "Enable read access for authenticated users" ON public.nurse_shifts FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.nurse_shifts;
+CREATE POLICY "Enable insert for authenticated users" ON public.nurse_shifts FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.nurse_shifts;
+CREATE POLICY "Enable update for authenticated users" ON public.nurse_shifts FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.nurse_shifts;
+CREATE POLICY "Enable delete for authenticated users" ON public.nurse_shifts FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Lab Test Groups Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.lab_test_groups;
+CREATE POLICY "Enable read access for authenticated users" ON public.lab_test_groups FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.lab_test_groups;
+CREATE POLICY "Enable insert for authenticated users" ON public.lab_test_groups FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.lab_test_groups;
+CREATE POLICY "Enable update for authenticated users" ON public.lab_test_groups FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.lab_test_groups;
+CREATE POLICY "Enable delete for authenticated users" ON public.lab_test_groups FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Lab Packages Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.lab_packages;
+CREATE POLICY "Enable read access for authenticated users" ON public.lab_packages FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.lab_packages;
+CREATE POLICY "Enable insert for authenticated users" ON public.lab_packages FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.lab_packages;
+CREATE POLICY "Enable update for authenticated users" ON public.lab_packages FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.lab_packages;
+CREATE POLICY "Enable delete for authenticated users" ON public.lab_packages FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Lab Package Items Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.lab_package_items;
+CREATE POLICY "Enable read access for authenticated users" ON public.lab_package_items FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.lab_package_items;
+CREATE POLICY "Enable insert for authenticated users" ON public.lab_package_items FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.lab_package_items;
+CREATE POLICY "Enable update for authenticated users" ON public.lab_package_items FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.lab_package_items;
+CREATE POLICY "Enable delete for authenticated users" ON public.lab_package_items FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- Birth Records Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.birth_records;
+CREATE POLICY "Enable read access for authenticated users" ON public.birth_records FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.birth_records;
+CREATE POLICY "Enable insert for authenticated users" ON public.birth_records FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.birth_records;
+CREATE POLICY "Enable update for authenticated users" ON public.birth_records FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.birth_records;
+CREATE POLICY "Enable delete for authenticated users" ON public.birth_records FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
+
+-- External Reports Policies
+DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.external_reports;
+CREATE POLICY "Enable read access for authenticated users" ON public.external_reports FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "Enable insert for authenticated users" ON public.external_reports;
+CREATE POLICY "Enable insert for authenticated users" ON public.external_reports FOR INSERT TO authenticated WITH CHECK (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.external_reports;
+CREATE POLICY "Enable update for authenticated users" ON public.external_reports FOR UPDATE TO authenticated USING (auth.uid() IS NOT NULL);
+DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.external_reports;
+CREATE POLICY "Enable delete for authenticated users" ON public.external_reports FOR DELETE TO authenticated USING (auth.uid() IS NOT NULL);
 
 -- Functions and Triggers
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -542,6 +817,15 @@ INSERT INTO public.lab_tests (name, category, price) VALUES
 ('Chest X-Ray', 'Radiology', 250.00),
 ('Ultrasound (Whole Abdomen)', 'Radiology', 800.00),
 ('CT Scan (Brain)', 'Radiology', 3500.00);
+
+-- Initial OT Rooms
+INSERT INTO public.ot_rooms (name, status, type) VALUES
+('Operation Theatre 1 (Major)', 'Available', 'Major'),
+('Operation Theatre 2 (Minor)', 'Available', 'Minor'),
+('Operation Theatre 3 (Cardiac)', 'Available', 'Cardiac'),
+('Operation Theatre 4 (Orthopedic)', 'Available', 'Orthopedic'),
+('Operation Theatre 5 (Emergency)', 'Available', 'Emergency')
+ON CONFLICT (name) DO NOTHING;
 
 -- VIEWS --
 
@@ -660,3 +944,5 @@ INSERT INTO public.pharmacy_items (
   'A-101'
 );
 */
+
+-- END OF SCHEMA --

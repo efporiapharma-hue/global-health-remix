@@ -13,7 +13,8 @@ import {
   X,
   Loader2,
   Package,
-  AlertCircle
+  AlertCircle,
+  ArrowRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Button } from '@/components/ui/button';
@@ -23,9 +24,10 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Label } from '@/components/ui/label';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, formatDate } from '@/lib/utils';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { 
@@ -183,24 +185,26 @@ export default function PharmacyPOS() {
 
   const [inventory, setInventory] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
+  const [prescriptions, setPrescriptions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isPrescriptionOpen, setIsPrescriptionOpen] = useState(false);
 
   const [cartPulse, setCartPulse] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
-    const [invData, patientsData] = await Promise.all([
+    const [invData, patientsData, prescriptionsData] = await Promise.all([
       supabaseService.getPharmacyItems(),
-      supabaseService.getPatients()
+      supabaseService.getPatients(),
+      supabaseService.getPrescriptions()
     ]);
     if (invData) setInventory(invData);
     if (patientsData) setPatients(patientsData);
+    if (prescriptionsData) setPrescriptions(prescriptionsData);
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   const filteredInventory = inventory.filter((item: any) => 
     item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -300,12 +304,25 @@ export default function PharmacyPOS() {
 
     const result = await supabaseService.createInvoice(invoice, invoiceItems);
     if (result) {
-      // Update each item's stock in Supabase
+      // Update each item's stock in Supabase and log transaction
       for (const item of cart) {
         const invItem = inventory.find(i => i.id === item.id);
         if (invItem) {
+          const newStock = Math.max(0, invItem.stock - item.quantity);
           await supabaseService.updatePharmacyItem(item.id, { 
-            stock: Math.max(0, invItem.stock - item.quantity) 
+            stock: newStock,
+            updated_at: new Date().toISOString()
+          });
+
+          // Log transaction
+          await supabaseService.logInventoryTransaction({
+            item_id: item.id,
+            transaction_type: 'SALE',
+            quantity: -item.quantity,
+            unit_price: item.price,
+            total_price: item.price * item.quantity,
+            reference_id: `INV-${result.id.slice(0, 8)}`,
+            performed_by: currentUser?.id
           });
         }
       }
@@ -340,6 +357,16 @@ export default function PharmacyPOS() {
 
   const printReceipt = () => {
     if (!lastOrder) return;
+    const hospitalInfo = storage.get<{
+      name: string;
+      address: string;
+      phone: string;
+      logo?: string | null;
+    }>(STORAGE_KEYS.HOSPITAL_INFO, {
+      name: 'GLOBAL HOSPITAL',
+      address: '123, Medical Square, City Center',
+      phone: '+91 98765 43210'
+    });
 
     const printWindow = window.open('', '_blank', 'width=300,height=600');
     if (!printWindow) {
@@ -358,25 +385,28 @@ export default function PharmacyPOS() {
               width: 58mm; 
               padding: 5mm; 
               margin: 0;
-              font-size: 12px;
+              font-size: 11px;
               line-height: 1.2;
             }
             .text-center { text-align: center; }
             .text-right { text-align: right; }
             .bold { font-weight: bold; }
             .divider { border-top: 1px dashed #000; margin: 5px 0; }
-            .header { margin-bottom: 10px; }
+            .header { margin-bottom: 5px; }
             .footer { margin-top: 15px; font-size: 10px; }
             table { width: 100%; border-collapse: collapse; }
-            th { text-align: left; border-bottom: 1px solid #000; }
+            th { text-align: left; border-bottom: 1px solid #000; font-size: 10px; }
             .total-row { font-weight: bold; }
+            img.logo { height: 40px; margin-bottom: 5px; }
           </style>
         </head>
         <body>
           <div class="header text-center">
-            <div class="bold" style="font-size: 16px;">GLOBAL HOSPITAL</div>
-            <div>Pharmacy Department</div>
-            <div>Tel: +91 1234567890</div>
+            ${hospitalInfo.logo ? `<img src="${hospitalInfo.logo}" class="logo" />` : ''}
+            <div class="bold" style="font-size: 14px;">${hospitalInfo.name}</div>
+            <div style="font-size: 9px;">${hospitalInfo.address}</div>
+            <div style="font-size: 9px;">Tel: ${hospitalInfo.phone}</div>
+            <div class="bold" style="margin-top: 5px;">PHARMACY RECEIPT</div>
           </div>
           
           <div class="divider"></div>
@@ -461,9 +491,20 @@ export default function PharmacyPOS() {
               </Link>
               <h1 className="text-xl font-bold">Pharmacy POS</h1>
             </div>
-            <Badge variant="outline" className="bg-emerald-50 text-emerald-600 border-emerald-100">
-              Terminal #01 - Active
-            </Badge>
+            <div className="flex gap-2">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                className="gap-2 text-medical-blue border-medical-blue/20 h-8"
+                onClick={() => setIsPrescriptionOpen(true)}
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Load Prescription
+              </Button>
+              <Badge variant="outline" className="bg-emerald-50 text-emerald-600 border-emerald-100">
+                Terminal #01 - Active
+              </Badge>
+            </div>
           </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -494,70 +535,78 @@ export default function PharmacyPOS() {
                     transition={{ duration: 0.2 }}
                   >
                     <Card 
-                      className={`group relative h-full cursor-pointer transition-all border-slate-100 shadow-sm hover:shadow-md overflow-hidden ${
+                      className={`group relative h-full cursor-pointer transition-all border-slate-100 shadow-sm hover:shadow-xl hover:border-medical-blue/20 overflow-hidden ${
                         isOutOfStock ? 'opacity-60 grayscale' : ''
                       }`}
                       onClick={() => !isOutOfStock && addToCart(item)}
                     >
-                      <div className="p-4 space-y-3">
-                        <div className="relative h-32 bg-slate-50 rounded-xl flex items-center justify-center overflow-hidden group-hover:bg-medical-blue/5 transition-colors">
+                      <div className="p-4 space-y-3 flex flex-col h-full">
+                        <div className="relative h-36 bg-slate-50 rounded-2xl flex items-center justify-center overflow-hidden group-hover:bg-medical-blue/5 transition-all duration-500">
                           {isOutOfStock ? (
                             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/10 backdrop-blur-[1px] z-10">
-                              <Badge variant="destructive" className="font-bold uppercase tracking-widest px-3 py-1 scale-110">Out of Stock</Badge>
+                              <Badge variant="destructive" className="font-black uppercase tracking-widest px-3 py-1 scale-110 shadow-lg">Out of Stock</Badge>
                             </div>
                           ) : isLowStock && (
                             <div className="absolute top-2 right-2 z-10">
-                              <Badge variant="warning" className="bg-amber-100 text-amber-700 border-amber-200">
+                              <Badge variant="warning" className="bg-amber-100 text-amber-700 border-amber-200 font-bold px-2 py-0.5">
                                 <AlertCircle className="w-3 h-3 mr-1" />
-                                Low
+                                Low Stock
                               </Badge>
                             </div>
                           )}
-                          <Package className={`w-10 h-10 text-slate-300 group-hover:text-medical-blue/30 transition-colors ${!isOutOfStock && 'group-hover:scale-110 duration-300'}`} />
+                          <div className="absolute top-2 left-2 z-10">
+                             <Badge variant="outline" className="bg-white/80 backdrop-blur-sm text-[9px] font-black uppercase tracking-tighter border-slate-100">
+                               {item.category || 'General'}
+                             </Badge>
+                          </div>
+                          
+                          <motion.div 
+                            whileHover={{ scale: 1.1, rotate: 5 }}
+                            className="transition-transform duration-500"
+                          >
+                             <Package className={`w-12 h-12 text-slate-200 group-hover:text-medical-blue/40 transition-colors ${!isOutOfStock && 'group-hover:scale-110'}`} />
+                          </motion.div>
                         </div>
                         
-                        <div className="space-y-1">
-                          <h3 className="font-bold text-slate-800 line-clamp-2 leading-tight min-h-[2.5rem] group-hover:text-medical-blue transition-colors">{item.name}</h3>
+                        <div className="space-y-1 flex-1">
+                          <h3 className="font-black text-slate-800 line-clamp-2 leading-[1.2] min-h-[2.4rem] text-sm group-hover:text-medical-blue transition-colors">
+                            {item.name}
+                          </h3>
                           <div className="flex items-center gap-2">
-                            <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-black uppercase tracking-tight bg-slate-100/80 text-slate-500">
-                              {item.category}
-                            </Badge>
-                            {item.rack_number && (
-                              <span className="text-[10px] text-slate-400 font-medium">Rack: {item.rack_number}</span>
-                            )}
+                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Rack: {item.rack_number || 'N/A'}</span>
+                             <span className="text-[10px] text-slate-300">•</span>
+                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">Batch: {item.batch_number || 'N/A'}</span>
                           </div>
                         </div>
-
-                        <div className="flex items-end justify-between pt-2">
+ 
+                        <div className="flex items-end justify-between py-2 border-t border-slate-50 mt-auto">
                           <div className="flex flex-col">
-                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Price Per Unit</span>
-                            <span className="text-lg font-black text-medical-blue">{formatCurrency(item.selling_price || 0)}</span>
+                            <span className="text-[9px] text-slate-400 font-black uppercase tracking-tight">Selling Price</span>
+                            <span className="text-xl font-black text-medical-blue leading-none">{formatCurrency(item.selling_price || 0)}</span>
                           </div>
                           <div className="flex flex-col items-end">
-                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">Availability</span>
-                            <span className={`text-sm font-bold ${isLowStock ? 'text-amber-600' : 'text-emerald-600'}`}>
-                              {item.stock} {item.unit || 'Units'}
+                            <span className="text-[9px] text-slate-400 font-black uppercase tracking-tight">In Store</span>
+                            <span className={`text-xs font-black ${isLowStock ? 'text-amber-600 font-black' : 'text-emerald-600 font-black'}`}>
+                              {item.stock} {item.unit || 'PCS'}
                             </span>
                           </div>
                         </div>
-
-                        <div className="pt-2">
-                          <motion.div whileTap={{ scale: 0.97 }}>
-                            <Button 
-                              className={`w-full gap-2 rounded-xl h-10 font-bold transition-all ${
-                                isOutOfStock 
-                                  ? 'bg-slate-200 text-slate-400 pointer-events-none' 
-                                  : 'bg-slate-50 text-medical-blue hover:bg-medical-blue hover:text-white border border-medical-blue/10 group-hover:shadow-lg group-hover:shadow-medical-blue/10'
-                              }`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                addToCart(item);
-                              }}
-                            >
-                              <Plus className="w-4 h-4" />
-                              Add to Cart
-                            </Button>
-                          </motion.div>
+ 
+                        <div className="pt-1">
+                          <Button 
+                            className={`w-full gap-2 rounded-xl h-11 font-black shadow-sm transition-all duration-300 ${
+                              isOutOfStock 
+                                ? 'bg-slate-100 text-slate-300 pointer-events-none' 
+                                : 'bg-medical-blue text-white hover:bg-medical-blue/90 hover:shadow-lg hover:shadow-medical-blue/20'
+                            }`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              addToCart(item);
+                            }}
+                          >
+                            <ShoppingCart className="w-4 h-4" />
+                            Add to Cart
+                          </Button>
                         </div>
                       </div>
                     </Card>
@@ -900,6 +949,82 @@ export default function PharmacyPOS() {
               <Button className="flex-1 bg-medical-blue" onClick={() => setIsSuccessOpen(false)}>
                 New Sale
               </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Prescription Dialog */}
+      <Dialog open={isPrescriptionOpen} onOpenChange={setIsPrescriptionOpen}>
+        <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Load from Prescription</DialogTitle>
+            <DialogDescription>Select a recent prescription to auto-populate the cart.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-1 gap-4">
+              {prescriptions.length === 0 ? (
+                <div className="text-center py-12 border-2 border-dashed rounded-xl border-slate-100 italic text-slate-400">
+                  No active prescriptions found.
+                </div>
+              ) : (
+                prescriptions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map((p: any) => (
+                  <Card key={p.id} className="hover:border-medical-blue/50 cursor-pointer transition-all hover:bg-slate-50/50 group" onClick={() => {
+                    const patientId = p.patient_id;
+                    setSelectedPatientId(patientId);
+                    
+                    // Add items to cart
+                    const itemsToCart: any[] = [];
+                    p.medications?.forEach((med: any) => {
+                      // Try to find the item in inventory
+                      const invItem = inventory.find(i => 
+                        i.name.toLowerCase().includes(med.name.toLowerCase()) || 
+                        med.name.toLowerCase().includes(i.name.toLowerCase())
+                      );
+                      
+                      if (invItem && invItem.stock > 0) {
+                        itemsToCart.push({
+                          id: invItem.id,
+                          name: invItem.name,
+                          price: invItem.selling_price || 0,
+                          quantity: 1, // Default to 1, can be adjusted in cart
+                          taxPercentage: invItem.tax_percentage || 0
+                        });
+                      }
+                    });
+
+                    if (itemsToCart.length > 0) {
+                      setCart([...cart, ...itemsToCart]);
+                      toast.success(`Loaded ${itemsToCart.length} items from prescription`);
+                    } else {
+                      toast.warning('Found medicines but none are currently in stock');
+                    }
+                    setIsPrescriptionOpen(false);
+                  }}>
+                    <CardHeader className="p-4 pb-2">
+                       <div className="flex justify-between items-start">
+                         <div>
+                            <CardTitle className="text-base">{p.patients?.name || 'Walk-in'}</CardTitle>
+                            <CardDescription className="text-[10px]">MRN: {p.patients?.mrn} • Dr. {p.doctor_name || 'Medical Team'}</CardDescription>
+                         </div>
+                         <Badge variant="outline" className="text-[9px] font-black">{formatDate(p.created_at)}</Badge>
+                       </div>
+                    </CardHeader>
+                    <CardContent className="p-4 pt-0">
+                       <div className="flex flex-wrap gap-1 mt-2">
+                          {p.medications?.map((m: any, i: number) => (
+                            <Badge key={i} variant="secondary" className="text-[9px] bg-slate-100 text-slate-600 border-none px-2 py-0.5">
+                              {m.name} {m.dosage && `(${m.dosage})`}
+                            </Badge>
+                          ))}
+                       </div>
+                       <div className="mt-3 opacity-0 group-hover:opacity-100 transition-opacity text-medical-blue text-[10px] font-bold flex items-center justify-end gap-1">
+                          Apply to Cart <ArrowRight className="w-4 h-4" />
+                       </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
             </div>
           </div>
         </DialogContent>

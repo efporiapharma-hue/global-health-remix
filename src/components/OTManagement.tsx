@@ -30,6 +30,7 @@ import { Separator } from '@/components/ui/separator';
 import { OperationRecord, OperationTheatre } from '@/types';
 import { toast } from 'sonner';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 export default function OTManagement() {
   const [theatres, setTheatres] = useState<OperationTheatre[]>([]);
@@ -60,9 +61,7 @@ export default function OTManagement() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   useEffect(() => {
     if (!isScheduleOpen) {

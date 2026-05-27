@@ -258,6 +258,18 @@ export default function Settings({ currentUser, onUserUpdate }: { currentUser?: 
   };
 
   const printPrescription = (pres: any) => {
+    const templateImage = storage.get(STORAGE_KEYS.TEMPLATE_IMAGE, null);
+    const hospitalInfo = storage.get<{
+      name: string;
+      address: string;
+      phone: string;
+      logo?: string | null;
+    }>(STORAGE_KEYS.HOSPITAL_INFO, {
+      name: 'GLOBAL HOSPITAL',
+      address: '123, Medical Square, City Center',
+      phone: '+91 98765 43210'
+    });
+    
     const patient = MOCK_PATIENTS.find(p => p.id === pres.patientId);
     const doctor = users.find(u => u.id === pres.doctorId);
     
@@ -272,7 +284,7 @@ export default function Settings({ currentUser, onUserUpdate }: { currentUser?: 
         <head>
           <title>Prescription - ${patient?.name}</title>
           <style>
-            @page { margin: 15mm; size: A4; }
+            @page { margin: 10mm; size: A4; }
             body { 
               font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
               margin: 0; 
@@ -287,12 +299,12 @@ export default function Settings({ currentUser, onUserUpdate }: { currentUser?: 
               left: 0;
               width: 100%;
               height: 100%;
-              z-index: -100;
-              opacity: 0.1;
+              z-index: -1;
             }
             .content { 
               position: relative;
-              padding-top: ${templateImage ? '240px' : '20px'}; 
+              padding-top: ${templateImage ? '260px' : '20px'}; 
+              padding-bottom: ${templateImage ? '100px' : '20px'};
               margin: 0 30px;
               z-index: 10;
             }

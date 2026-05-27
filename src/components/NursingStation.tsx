@@ -30,6 +30,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 export default function NursingStation() {
   const [tasks, setTasks] = useState<any[]>([]);
@@ -66,9 +67,7 @@ export default function NursingStation() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   const handleAdmitPatient = async (patientId: string) => {
     const result = await supabaseService.updatePatient(patientId, { status: 'Stable' });

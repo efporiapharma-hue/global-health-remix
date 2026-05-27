@@ -1,7 +1,13 @@
-import { supabase } from '../lib/supabase';
+import { supabase, broadcastDataMutation } from '../lib/supabase';
 import { toast } from 'sonner';
+import { storage, STORAGE_KEYS } from '../lib/storage';
+import { 
+  MOCK_PRESCRIPTIONS, 
+  MOCK_NURSE_SHIFTS, 
+  MOCK_THEATRES 
+} from '../mockData';
 
-export const supabaseService = {
+const rawSupabaseService = {
   // Patients
   getPatients: async () => {
     try {
@@ -95,6 +101,22 @@ export const supabaseService = {
     }
   },
 
+  updateAppointment: async (id: string, updates: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('appointments')
+        .update(updates)
+        .eq('id', id)
+        .select();
+      
+      if (error) throw error;
+      return data[0];
+    } catch (error: any) {
+      console.error('Error updating appointment:', error.message);
+      return null;
+    }
+  },
+
   // Prescriptions
   getPrescriptions: async (patientId?: string) => {
     try {
@@ -111,8 +133,12 @@ export const supabaseService = {
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching prescriptions:', error.message);
-      return null;
+      console.warn('Handling local fallback for prescriptions:', error.message);
+      let localData = storage.get(STORAGE_KEYS.PRESCRIPTIONS, MOCK_PRESCRIPTIONS);
+      if (patientId) {
+        localData = localData.filter((rx: any) => rx.patientId === patientId || rx.patient_id === patientId);
+      }
+      return localData;
     }
   },
 
@@ -126,8 +152,16 @@ export const supabaseService = {
       if (error) throw error;
       return data[0];
     } catch (error: any) {
-      console.error('Error creating prescription:', error.message);
-      return null;
+      console.warn('Handling local fallback for create prescription:', error.message);
+      const localData = storage.get(STORAGE_KEYS.PRESCRIPTIONS, MOCK_PRESCRIPTIONS);
+      const newRx = { 
+        ...prescription, 
+        id: prescription.id || 'rx-' + Math.random().toString(36).substring(2, 9), 
+        created_at: new Date().toISOString() 
+      };
+      localData.unshift(newRx);
+      storage.set(STORAGE_KEYS.PRESCRIPTIONS, localData);
+      return newRx;
     }
   },
 
@@ -264,6 +298,69 @@ export const supabaseService = {
     }
   },
 
+  // Radiology
+  getRadiologyRecords: async () => {
+    try {
+      const { data, error } = await supabase
+        .from('radiology_records')
+        .select('*, patients(name, mrn), profiles:requested_by(name)')
+        .order('requested_at', { ascending: false });
+      
+      if (error) throw error;
+      return data;
+    } catch (error: any) {
+      console.warn('Handling local fallback for radiology records:', error.message);
+      return storage.get('hms_radiology_records', []);
+    }
+  },
+
+  createRadiologyRecord: async (record: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('radiology_records')
+        .insert([record])
+        .select();
+      
+      if (error) throw error;
+      return data[0];
+    } catch (error: any) {
+      console.warn('Handling local fallback for create radiology record:', error.message);
+      const list = storage.get('hms_radiology_records', []);
+      const newRecord = {
+        ...record,
+        id: record.id || 'rad-' + Math.random().toString(36).substring(2, 9),
+        requested_at: record.requested_at || new Date().toISOString()
+      };
+      list.unshift(newRecord);
+      storage.set('hms_radiology_records', list);
+      return newRecord;
+    }
+  },
+
+  updateRadiologyRecord: async (id: string, updates: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('radiology_records')
+        .update(updates)
+        .eq('id', id)
+        .select();
+      
+      if (error) throw error;
+      return data[0];
+    } catch (error: any) {
+      console.warn('Handling local fallback for update radiology record:', error.message);
+      const list = storage.get('hms_radiology_records', []);
+      const updatedList = list.map((item: any) => {
+        if (item.id === id) {
+          return { ...item, ...updates };
+        }
+        return item;
+      });
+      storage.set('hms_radiology_records', updatedList);
+      return updatedList.find((item: any) => item.id === id) || null;
+    }
+  },
+
   // Hospital Info
   getHospitalInfo: async () => {
     try {
@@ -359,8 +456,17 @@ export const supabaseService = {
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching deliveries:', error.message);
-      return null;
+      console.warn('Handling local fallback for deliveries:', error.message);
+      const list = storage.get('hms_maternity_deliveries', []);
+      const patients = storage.get('hms_patients', []);
+      const enriched = list.map((item: any) => {
+        const pt = patients.find((p: any) => p.id === item.patient_id);
+        return {
+          ...item,
+          patients: pt ? { name: pt.name, mrn: pt.mrn } : { name: 'Unknown Mother', mrn: 'MRN-???' }
+        };
+      });
+      return enriched;
     }
   },
 
@@ -374,8 +480,39 @@ export const supabaseService = {
       if (error) throw error;
       return data[0];
     } catch (error: any) {
-      console.error('Error creating delivery:', error.message);
-      return null;
+      console.warn('Handling local fallback for create delivery:', error.message);
+      const list = storage.get('hms_maternity_deliveries', []);
+      const newD = {
+        ...delivery,
+        id: 'del-' + Math.random().toString(36).substring(2, 9),
+        created_at: new Date().toISOString()
+      };
+      list.unshift(newD);
+      storage.set('hms_maternity_deliveries', list);
+
+      let weight = 3.2;
+      let gender = 'male';
+      const notes = delivery.notes || '';
+      const weightMatch = notes.match(/weight:\s*([0-9.]+)/i);
+      const genderMatch = notes.match(/gender:\s*(\w+)/i);
+      if (weightMatch) weight = parseFloat(weightMatch[1]);
+      if (genderMatch) gender = genderMatch[1].toLowerCase();
+
+      const newborns = storage.get('hms_maternity_newborns', []);
+      const newBaby = {
+        id: 'newborn-' + Math.random().toString(36).substring(2, 9),
+        mother_id: delivery.patient_id,
+        birth_weight: weight,
+        gender: gender.charAt(0).toUpperCase() + gender.slice(1),
+        birth_date_time: (delivery.delivery_date && delivery.delivery_time) 
+          ? `${delivery.delivery_date}T${delivery.delivery_time}` 
+          : new Date().toISOString(),
+        created_at: new Date().toISOString()
+      };
+      newborns.unshift(newBaby);
+      storage.set('hms_maternity_newborns', newborns);
+
+      return newD;
     }
   },
 
@@ -389,8 +526,17 @@ export const supabaseService = {
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching newborns:', error.message);
-      return null;
+      console.warn('Handling local fallback for newborns:', error.message);
+      const list = storage.get('hms_maternity_newborns', []);
+      const patients = storage.get('hms_patients', []);
+      const enriched = list.map((item: any) => {
+        const pt = patients.find((p: any) => p.id === item.mother_id);
+        return {
+          ...item,
+          patients: pt ? { name: pt.name, mrn: pt.mrn } : { name: 'Unknown', mrn: '' }
+        };
+      });
+      return enriched;
     }
   },
 
@@ -405,8 +551,8 @@ export const supabaseService = {
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching OT rooms:', error.message);
-      return null;
+      console.warn('Handling local fallback for OT rooms:', error.message);
+      return storage.get('hms_ot_rooms', MOCK_THEATRES);
     }
   },
 
@@ -414,14 +560,14 @@ export const supabaseService = {
     try {
       const { data, error } = await supabase
         .from('ot_schedules')
-        .select('*, patients(name, mrn), profiles:surgeon_id(name), ot_rooms(name)')
+        .select('*, patients(name, mrn), profiles:surgeon_id(name), ot_rooms:room_id(name)')
         .order('operation_date', { ascending: true });
       
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching OT schedules:', error.message);
-      return null;
+      console.warn('Handling local fallback for OT schedules:', error.message);
+      return storage.get('hms_ot_schedules', []);
     }
   },
 
@@ -435,8 +581,16 @@ export const supabaseService = {
       if (error) throw error;
       return data[0];
     } catch (error: any) {
-      console.error('Error creating OT schedule:', error.message);
-      return null;
+      console.warn('Handling local fallback for create OT schedule:', error.message);
+      const list = storage.get('hms_ot_schedules', []);
+      const newSchedule = {
+        ...schedule,
+        id: schedule.id || 'ot-sch-' + Math.random().toString(36).substring(2, 9),
+        created_at: new Date().toISOString()
+      };
+      list.push(newSchedule);
+      storage.set('hms_ot_schedules', list);
+      return newSchedule;
     }
   },
 
@@ -450,8 +604,11 @@ export const supabaseService = {
       if (error) throw error;
       return true;
     } catch (error: any) {
-      console.error('Error deleting OT record:', error.message);
-      return false;
+      console.warn('Handling local fallback for delete OT record:', error.message);
+      const list = storage.get('hms_ot_schedules', []);
+      const filtered = list.filter((item: any) => item.id !== id);
+      storage.set('hms_ot_schedules', filtered);
+      return true;
     }
   },
 
@@ -466,8 +623,8 @@ export const supabaseService = {
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching insurance claims:', error.message);
-      return null;
+      console.warn('Handling local fallback for insurance claims:', error.message);
+      return storage.get(STORAGE_KEYS.INSURANCE, []);
     }
   },
 
@@ -481,8 +638,16 @@ export const supabaseService = {
       if (error) throw error;
       return data[0];
     } catch (error: any) {
-      console.error('Error creating insurance claim:', error.message);
-      return null;
+      console.warn('Handling local fallback for create insurance claim:', error.message);
+      const claims = storage.get(STORAGE_KEYS.INSURANCE, []);
+      const newClaim = { 
+        ...claim, 
+        id: claim.id || 'claim-' + Math.random().toString(36).substring(2, 9),
+        created_at: new Date().toISOString()
+      };
+      claims.unshift(newClaim);
+      storage.set(STORAGE_KEYS.INSURANCE, claims);
+      return newClaim;
     }
   },
 
@@ -496,8 +661,11 @@ export const supabaseService = {
       if (error) throw error;
       return true;
     } catch (error: any) {
-      console.error('Error deleting insurance claim:', error.message);
-      return false;
+      console.warn('Handling local fallback for delete insurance claim:', error.message);
+      const claims = storage.get(STORAGE_KEYS.INSURANCE, []);
+      const filtered = claims.filter((c: any) => c.id !== id);
+      storage.set(STORAGE_KEYS.INSURANCE, filtered);
+      return true;
     }
   },
 
@@ -534,8 +702,8 @@ export const supabaseService = {
       if (error) throw error;
       return data;
     } catch (error: any) {
-      console.error('Error fetching nurse shifts:', error.message);
-      return null;
+      console.warn('Handling local fallback for nurse shifts:', error.message);
+      return storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
     }
   },
 
@@ -729,6 +897,21 @@ export const supabaseService = {
   },
 
   // Admissions
+  getAdmissions: async () => {
+    try {
+      const { data, error } = await supabase
+        .from('admissions')
+        .select('*')
+        .order('admission_date', { ascending: false });
+      
+      if (error) throw error;
+      return data;
+    } catch (error: any) {
+      console.warn('Handling local fallback for admissions:', error.message);
+      return storage.get('hms_admissions', []);
+    }
+  },
+
   createAdmission: async (admission: any) => {
     try {
       const { data, error } = await supabase
@@ -739,8 +922,18 @@ export const supabaseService = {
       if (error) throw error;
       return data[0];
     } catch (error: any) {
-      console.error('Error creating admission:', error.message);
-      return null;
+      console.warn('Handling local fallback for create admission:', error.message);
+      const list = storage.get('hms_admissions', []);
+      const newD = {
+        ...admission,
+        id: admission.id || 'adm-' + Math.random().toString(36).substring(2, 9),
+        admission_date: admission.admission_date || new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        status: admission.status || 'Admitted'
+      };
+      list.unshift(newD);
+      storage.set('hms_admissions', list);
+      return newD;
     }
   },
 
@@ -755,8 +948,16 @@ export const supabaseService = {
       if (error) throw error;
       return data[0];
     } catch (error: any) {
-      console.error('Error discharging patient:', error.message);
-      return null;
+      console.warn('Handling local fallback for discharge patient:', error.message);
+      const list = storage.get('hms_admissions', []);
+      const updated = list.map((item: any) => {
+        if (item.id === admissionId) {
+          return { ...item, status: 'Discharged', discharge_date: dischargeDate };
+        }
+        return item;
+      });
+      storage.set('hms_admissions', updated);
+      return updated.find((item: any) => item.id === admissionId) || null;
     }
   },
 
@@ -829,6 +1030,21 @@ export const supabaseService = {
   },
 
   // Pharmacy
+  logInventoryTransaction: async (transaction: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('inventory_transactions')
+        .insert([transaction])
+        .select();
+      
+      if (error) throw error;
+      return data[0];
+    } catch (error: any) {
+      console.error('Error logging inventory transaction:', error.message);
+      return null;
+    }
+  },
+
   getPharmacyItems: async () => {
     try {
       const { data, error } = await supabase
@@ -875,6 +1091,21 @@ export const supabaseService = {
     }
   },
 
+  deletePharmacyItem: async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('pharmacy_items')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      return true;
+    } catch (error: any) {
+      console.error('Error deleting pharmacy item:', error.message);
+      return false;
+    }
+  },
+
   // Dashboard Stats
   getDashboardStats: async () => {
     try {
@@ -899,3 +1130,57 @@ export const supabaseService = {
     }
   }
 };
+
+// Intercept and wrap for automatic real-time sync broadcast!
+const syncWrappedService = {} as any;
+for (const [key, value] of Object.entries(rawSupabaseService)) {
+  if (typeof value === 'function') {
+    // If it's a mutation method, wrap it to automatically broadcast changes to all devices
+    const isMutation = 
+      key.startsWith('create') || 
+      key.startsWith('update') || 
+      key.startsWith('delete') || 
+      key.startsWith('add') || 
+      key.startsWith('record') ||
+      key.includes('Insert') ||
+      key.includes('Update') ||
+      key.includes('Delete');
+    
+    if (isMutation) {
+      syncWrappedService[key] = async function(...args: any[]) {
+        const result = await value.apply(this, args);
+        if (result) { // successful mutation (returns updated/inserted object, or true for delete)
+          let concept = 'general';
+          const k = key.toLowerCase();
+          if (k.includes('patient')) concept = 'patients';
+          else if (k.includes('appointment')) concept = 'appointments';
+          else if (k.includes('prescription')) concept = 'prescriptions';
+          else if (k.includes('invoice')) concept = 'invoices';
+          else if (k.includes('expense')) concept = 'expenses';
+          else if (k.includes('staff') || k.includes('profile')) concept = 'profiles';
+          else if (k.includes('bed')) concept = 'beds';
+          else if (k.includes('admission')) concept = 'admissions';
+          else if (k.includes('vital')) concept = 'patient_vitals';
+          else if (k.includes('note')) concept = 'nursing_notes';
+          else if (k.includes('pharmacy')) concept = 'pharmacy_items';
+          else if (k.includes('ot') || k.includes('schedule')) concept = 'ot_schedules';
+          else if (k.includes('claim')) concept = 'insurance_claims';
+          else if (k.includes('test') || k.includes('request')) concept = 'test_requests';
+          
+          const action = 
+            key.startsWith('create') || key.startsWith('add') ? 'insert' : 
+            (key.startsWith('delete') ? 'delete' : 'update');
+          
+          broadcastDataMutation(concept, action as any);
+        }
+        return result;
+      };
+    } else {
+      syncWrappedService[key] = value;
+    }
+  } else {
+    syncWrappedService[key] = value;
+  }
+}
+
+export const supabaseService = syncWrappedService as typeof rawSupabaseService;

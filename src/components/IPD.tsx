@@ -40,7 +40,7 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { MOCK_BED_RATES, MOCK_USERS, MOCK_PATIENTS } from '@/mockData';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, formatDate } from '@/lib/utils';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { 
   Dialog, 
@@ -61,22 +61,26 @@ import {
 } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 export default function IPD() {
   const [view, setView] = useState<'beds' | 'admissions'>('beds');
   const [beds, setBeds] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
+  const [admissions, setAdmissions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [bedsData, patientsData] = await Promise.all([
+      const [bedsData, patientsData, admissionsData] = await Promise.all([
         supabaseService.getBeds(),
-        supabaseService.getPatients()
+        supabaseService.getPatients(),
+        supabaseService.getAdmissions()
       ]);
       if (bedsData) setBeds(bedsData);
       if (patientsData) setPatients(patientsData);
+      if (admissionsData) setAdmissions(admissionsData);
     } catch (error) {
       console.error('Error fetching IPD data:', error);
       toast.error('Failed to load IPD data');
@@ -85,9 +89,7 @@ export default function IPD() {
     }
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddBedOpen, setIsAddBedOpen] = useState(false);
@@ -202,11 +204,18 @@ export default function IPD() {
     if (!bed) return;
     const patient = patients.find(p => p.id === bed.patient_id);
     
-    // In a real app, we'd also find the active admission record
-    // For now, let's just update the bed status
+    // Find and discharge the active admission record as well
+    const activeAdmission = admissions.find(a => a.bed_id === bedId && a.patient_id === bed.patient_id && a.status === 'Admitted');
+    if (activeAdmission) {
+      await supabaseService.dischargePatient(activeAdmission.id, new Date().toISOString());
+    }
+
     const updatedBed = await supabaseService.updateBedStatus(bedId, 'Available', null);
     if (updatedBed) {
       setBeds(beds.map(b => b.id === bedId ? updatedBed : b));
+      // Refresh admissions state
+      const updatedAdmissions = await supabaseService.getAdmissions();
+      if (updatedAdmissions) setAdmissions(updatedAdmissions);
       toast.success('Patient discharged and bed freed');
     } else {
       toast.error('Failed to discharge patient');
@@ -253,6 +262,27 @@ export default function IPD() {
       </div>
     );
   }
+
+  const occupiedBeds = beds.filter(b => b.status === 'Occupied').length;
+  const totalBeds = beds.length;
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayAdmissions = admissions.filter(a => {
+    if (!a.admission_date) return false;
+    return a.admission_date.startsWith(todayStr);
+  }).length;
+
+  const formatTime = (dateStr: string) => {
+    try {
+      return new Date(dateStr).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+    } catch (e) {
+      return '09:30 AM';
+    }
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -536,6 +566,8 @@ export default function IPD() {
                             p.id === admissionForm.patientId ? { ...p, needs_admission: false, status: 'Admitted' } : p
                           ));
 
+                          setAdmissions([syncedAdmission, ...admissions]);
+
                           if (updatedBed) {
                             setBeds(beds.map(b => b.id === admissionForm.bedId ? updatedBed : b));
                           }
@@ -596,7 +628,7 @@ export default function IPD() {
               <BedIcon className="w-6 h-6" />
             </div>
             <div>
-              <p className="text-2xl font-bold">24 / 40</p>
+              <p className="text-2xl font-bold">{occupiedBeds} / {totalBeds}</p>
               <p className="text-xs text-muted-foreground font-medium uppercase">Beds Occupied</p>
             </div>
           </CardContent>
@@ -607,7 +639,7 @@ export default function IPD() {
               <UserPlus className="w-6 h-6" />
             </div>
             <div>
-              <p className="text-2xl font-bold">8</p>
+              <p className="text-2xl font-bold">{todayAdmissions}</p>
               <p className="text-xs text-muted-foreground font-medium uppercase">Today's Admissions</p>
             </div>
           </CardContent>
@@ -857,6 +889,7 @@ export default function IPD() {
                 {beds.filter(b => b.status === 'Occupied').map(bed => {
                   const patient = patients.find(p => p.id === bed.patient_id);
                   const doctor = patient?.attending_doctor_id ? MOCK_USERS.find(u => u.id === patient.attending_doctor_id) : null;
+                  const admission = admissions.find(a => a.bed_id === bed.id && a.patient_id === bed.patient_id && a.status === 'Admitted');
                   return (
                     <TableRow key={bed.id} className="hover:bg-slate-50/50 transition-colors">
                       <TableCell>
@@ -886,8 +919,12 @@ export default function IPD() {
                         <p className="text-[10px] text-slate-400">{doctor?.department || 'General'}</p>
                       </TableCell>
                       <TableCell>
-                        <p className="text-xs font-medium text-slate-600">12-Apr-2024</p>
-                        <p className="text-[9px] text-slate-400">09:30 AM</p>
+                        <p className="text-xs font-medium text-slate-600">
+                          {admission?.admission_date ? formatDate(admission.admission_date) : 'Recently'}
+                        </p>
+                        <p className="text-[9px] text-slate-400">
+                          {admission?.admission_date ? formatTime(admission.admission_date) : ''}
+                        </p>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">

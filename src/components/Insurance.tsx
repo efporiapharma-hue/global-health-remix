@@ -43,6 +43,7 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 export default function Insurance() {
   const [insuranceRecords, setInsuranceRecords] = useState<any[]>([]);
@@ -93,9 +94,7 @@ export default function Insurance() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   const handleCreateClaim = async () => {
     if (!newClaim.patientId || !newClaim.policyNo) {

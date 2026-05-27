@@ -43,6 +43,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 export default function Maternity() {
   const [patients, setPatients] = useState<any[]>([]);
@@ -79,9 +80,7 @@ export default function Maternity() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   const handleAddDelivery = async () => {
     if (!newDelivery.motherId || !newDelivery.date) {

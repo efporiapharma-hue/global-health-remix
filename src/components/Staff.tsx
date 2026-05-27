@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 
 export default function Staff() {
@@ -64,9 +65,7 @@ export default function Staff() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   const handleAddStaff = async () => {
     if (!newStaff.name || !newStaff.email) {

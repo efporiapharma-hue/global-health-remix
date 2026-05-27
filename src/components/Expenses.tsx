@@ -29,6 +29,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { 
   Dialog, 
   DialogContent, 
@@ -61,10 +62,6 @@ export default function Expenses() {
   });
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
 
-  useEffect(() => {
-    fetchExpenses();
-  }, []);
-
   const fetchExpenses = async () => {
     setIsLoading(true);
     const data = await supabaseService.getExpenses();
@@ -73,6 +70,8 @@ export default function Expenses() {
     }
     setIsLoading(false);
   };
+
+  useDataSync(fetchExpenses);
 
   const handleAddExpense = async () => {
     if (!newExpense.description || !newExpense.amount) {

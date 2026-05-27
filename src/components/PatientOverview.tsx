@@ -38,6 +38,7 @@ import { formatCurrency, formatDate } from '@/lib/utils';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { toast } from 'sonner';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 import { 
   Dialog, 
   DialogContent, 
@@ -82,10 +83,6 @@ export default function PatientOverview({ userRole }: { userRole?: string }) {
   const isFinancialVisible = userRole !== 'DOCTOR' && userRole !== 'NURSE';
   const setLoading = setIsLoading;
 
-  useEffect(() => {
-    fetchInitialData();
-  }, []);
-
   const fetchInitialData = async () => {
     setIsLoading(true);
     const [pts, bds, stf] = await Promise.all([
@@ -98,6 +95,8 @@ export default function PatientOverview({ userRole }: { userRole?: string }) {
     if (stf) setStaff(stf);
     setIsLoading(false);
   };
+
+  useDataSync(fetchInitialData);
 
   useEffect(() => {
     if (patientIdFromUrl) {

@@ -64,14 +64,14 @@ import { MOCK_PATIENTS, MOCK_USERS } from './mockData';
 import { User as UserType } from './types';
 
 const navItems = [
-  { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTION', 'NURSE', 'LAB_STAFF', 'PHARMACIST', 'ACCOUNTANT'] },
-  { name: 'OPD Management', icon: Stethoscope, path: '/opd', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTION', 'NURSE'] },
-  { name: 'IPD Management', icon: Calendar, path: '/ipd', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTION', 'NURSE'] },
+  { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE', 'LAB_STAFF', 'PHARMACIST', 'ACCOUNTANT'] },
+  { name: 'OPD Management', icon: Stethoscope, path: '/opd', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE'] },
+  { name: 'IPD Management', icon: Calendar, path: '/ipd', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE'] },
   { name: 'Nursing Station', icon: ClipboardList, path: '/nursing', roles: ['SUPER_ADMIN', 'NURSE', 'DOCTOR'] },
   { name: 'OT Management', icon: Scissors, path: '/ot', roles: ['SUPER_ADMIN', 'DOCTOR', 'SURGEON'] },
   { name: 'Insurance & TPA', icon: Shield, path: '/insurance', roles: ['SUPER_ADMIN', 'ACCOUNTANT'] },
-  { name: 'Patient 360', icon: User, path: '/patient-overview', roles: ['SUPER_ADMIN', 'DOCTOR', 'NURSE', 'RECEPTION'] },
-  { name: 'Billing & Accounts', icon: CreditCard, path: '/billing', roles: ['SUPER_ADMIN', 'ACCOUNTANT'] },
+  { name: 'Patient 360', icon: User, path: '/patient-overview', roles: ['SUPER_ADMIN', 'DOCTOR', 'NURSE', 'RECEPTIONIST'] },
+  { name: 'Billing & Accounts', icon: CreditCard, path: '/billing', roles: ['SUPER_ADMIN', 'ACCOUNTANT', 'RECEPTIONIST'] },
   { name: 'Lab & Radiology', icon: FlaskConical, path: '/lab', roles: ['SUPER_ADMIN', 'LAB_STAFF', 'DOCTOR'] },
   { name: 'Pharmacy', icon: Pill, path: '/pharmacy', roles: ['SUPER_ADMIN', 'PHARMACIST', 'DOCTOR'] },
   { name: 'Maternity', icon: Baby, path: '/maternity', roles: ['SUPER_ADMIN', 'DOCTOR', 'NURSE'] },

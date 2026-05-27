@@ -34,6 +34,7 @@ import { formatCurrency, formatDate } from '@/lib/utils';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { MOCK_USERS, MOCK_BILLING } from '@/mockData';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 import { 
   Dialog, 
@@ -73,9 +74,7 @@ export default function Billing() {
     setLoading(false);
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   // Load latest rates from storage
   const [otRates] = useState(() => storage.get(STORAGE_KEYS.OT_RATES, []));

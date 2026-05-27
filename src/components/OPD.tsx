@@ -55,6 +55,7 @@ import { toast } from 'sonner';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { playNotificationSound } from '@/lib/notifications';
 import { supabaseService } from '@/services/supabaseService';
+import { useDataSync } from '@/hooks/useDataSync';
 
 export default function OPD() {
   const [activeTab, setActiveTab] = useState<'queue' | 'appointments' | 'patients'>('queue');
@@ -136,11 +137,13 @@ export default function OPD() {
       if (patientsData) setPatients(patientsData);
       if (appointmentsData) {
         // Map patients data into appointments if needed, or use the joined data
-        const mappedApts = appointmentsData.map((apt: any) => ({
-          ...apt,
-          patientName: apt.patients?.name || 'Unknown',
-          patientMrn: apt.patients?.mrn || 'N/A'
-        }));
+        const mappedApts = appointmentsData
+          .filter((apt: any) => !apt.type || apt.type === 'OPD')
+          .map((apt: any) => ({
+            ...apt,
+            patientName: apt.patients?.name || 'Unknown',
+            patientMrn: apt.patients?.mrn || 'N/A'
+          }));
         setAppointments(mappedApts);
       }
       if (prescriptionsData) setSavedPrescriptions(prescriptionsData);
@@ -152,9 +155,7 @@ export default function OPD() {
     }
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useDataSync(fetchData);
 
   useEffect(() => {
     if (!isAppointmentOpen) {
@@ -439,6 +440,7 @@ export default function OPD() {
     }
     const tokenNumber = `#${Math.floor(Math.random() * 900) + 100}`;
     const mrn = `MRN${Math.floor(Math.random() * 90000) + 10000}`;
+    const regFee = 200;
     
     const synced = await supabaseService.createPatient({
       mrn,
@@ -462,13 +464,36 @@ export default function OPD() {
 
     if (synced) {
       setPatients([synced, ...patients]);
+
+      // Create Invoice for Registration Fee
+      const invoiceData = {
+        patient_id: synced.id,
+        invoice_number: `INV-REG-${Date.now()}`,
+        status: 'Unpaid',
+        total_amount: regFee,
+        paid_amount: 0,
+        payment_method: 'Cash',
+        type: 'OPD',
+        created_by: currentUser?.id
+      };
+
+      const invoiceItems = [{
+        item_name: 'OPD Registration Fee',
+        item_type: 'Consultation',
+        quantity: 1,
+        unit_price: regFee,
+        total_price: regFee
+      }];
+
+      await supabaseService.createInvoice(invoiceData, invoiceItems);
+
       setLastToken({
         tokenNumber,
         patientName: newPatient.name,
         mrn,
-        doctor: "Dr. Rajesh Sharma", // Default for registration
+        doctor: "Reception Counter", 
         date: new Date().toLocaleString(),
-        fee: 200 // Registration fee
+        fee: regFee
       });
 
       setIsRegisterOpen(false);
@@ -506,17 +531,41 @@ export default function OPD() {
     }
     const patient = patients.find(p => p.id === newAppointment.patientId);
     const tokenNumber = `APT-${Math.floor(Math.random() * 900) + 100}`;
+    const appointmentDate = newAppointment.date || new Date().toISOString().split('T')[0];
     
     const synced = await supabaseService.createAppointment({
       patient_id: newAppointment.patientId,
       doctor_id: null, // Would need doctor UUID mapping
-      appointment_date: newAppointment.date || new Date().toISOString().split('T')[0],
+      type: 'OPD',
+      appointment_date: appointmentDate,
       appointment_time: newAppointment.time || '10:00 AM',
       status: 'Scheduled',
       urgency: newAppointment.urgency
     });
 
     if (synced) {
+      // Create Invoice for Consultation Fee
+      const invoiceData = {
+        patient_id: newAppointment.patientId,
+        invoice_number: `INV-OPD-${Date.now()}`,
+        status: 'Unpaid',
+        total_amount: appointmentFee,
+        paid_amount: 0,
+        payment_method: 'Cash',
+        type: 'OPD',
+        created_by: currentUser?.id
+      };
+
+      const invoiceItems = [{
+        item_name: `Consultation - ${newAppointment.doctor}`,
+        item_type: 'Consultation',
+        quantity: 1,
+        unit_price: appointmentFee,
+        total_price: appointmentFee
+      }];
+
+      await supabaseService.createInvoice(invoiceData, invoiceItems);
+
       const aptWithPatient = {
         ...synced,
         patientName: patient?.name || 'Unknown',
@@ -621,6 +670,16 @@ export default function OPD() {
       toast.success('Patient record removed');
     } else {
       toast.error('Failed to delete patient');
+    }
+  };
+
+  const handlePayAppointment = async (id: string) => {
+    const success = await supabaseService.updateAppointment(id, { payment_status: 'Paid' });
+    if (success) {
+      setAppointments(appointments.map(a => a.id === id ? { ...a, payment_status: 'Paid' } : a));
+      toast.success('Consultation fee collected successfully');
+    } else {
+      toast.error('Failed to update payment status');
     }
   };
 
@@ -1236,14 +1295,24 @@ export default function OPD() {
                     <TableHead className="whitespace-nowrap">Doctor</TableHead>
                     <TableHead className="whitespace-nowrap">Time</TableHead>
                     <TableHead className="whitespace-nowrap">Status</TableHead>
+                    <TableHead className="whitespace-nowrap">Payment</TableHead>
                     <TableHead className="whitespace-nowrap">Urgency</TableHead>
                     <TableHead className="text-right whitespace-nowrap">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {appointments.map((apt, i) => (
-                    <TableRow key={apt.id} className="border-slate-50">
-                      <TableCell className="font-bold text-medical-blue whitespace-nowrap">#{100 + i + 1}</TableCell>
+                  {appointments
+                    .filter(apt => {
+                      if (activeTab === 'queue') {
+                        const today = new Date().toISOString().split('T')[0];
+                        const aptDate = typeof apt.appointment_date === 'string' ? apt.appointment_date : new Date(apt.appointment_date).toISOString().split('T')[0];
+                        return aptDate === today;
+                      }
+                      return true; // Show all for 'appointments' tab
+                    })
+                    .map((apt, i) => (
+                      <TableRow key={apt.id} className="border-slate-50">
+                        <TableCell className="font-bold text-medical-blue whitespace-nowrap">#{100 + i + 1}</TableCell>
                       <TableCell className="whitespace-nowrap">
                         <div>
                           <p className="font-medium">{apt.patientName}</p>
@@ -1254,7 +1323,7 @@ export default function OPD() {
                       <TableCell className="whitespace-nowrap">
                         <div className="flex items-center gap-1 text-xs">
                           <Clock className="w-3 h-3 text-muted-foreground" />
-                          {apt.time}
+                          {apt.appointment_time}
                         </div>
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
@@ -1263,12 +1332,30 @@ export default function OPD() {
                         </Badge>
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
+                         <Badge 
+                           variant="outline" 
+                           className={`${apt.payment_status === 'Paid' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-100'} border-none`}
+                         >
+                           {apt.payment_status || 'Pending'}
+                         </Badge>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
                         <Badge className={`${getUrgencyColor(apt.urgency as string)} border-none py-0 h-5 text-[10px]`}>
                           {apt.urgency}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <div className="flex justify-end gap-2">
+                        <div className="flex justify-end gap-2 items-center">
+                          {apt.payment_status !== 'Paid' && (
+                            <Button 
+                              variant="outline" 
+                              size="sm" 
+                              className="h-8 text-[10px] font-black uppercase tracking-wider text-rose-600 border-rose-100 hover:bg-rose-50 px-2"
+                              onClick={() => handlePayAppointment(apt.id)}
+                            >
+                              Collect ₹{apt.fee || appointmentFee}
+                            </Button>
+                          )}
                           <Button 
                             variant="ghost" 
                             size="icon" 
