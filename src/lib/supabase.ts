@@ -1,10 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = localStorage.getItem('hms_supabase_url') || import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = localStorage.getItem('hms_supabase_anon_key') || import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase credentials missing. Persistent database features will be disabled. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment variables.');
+export const isSupabaseConfigured = !!(
+  supabaseUrl && 
+  supabaseAnonKey && 
+  supabaseUrl !== 'https://placeholder.supabase.co' && 
+  !supabaseUrl.includes('placeholder')
+);
+
+if (!isSupabaseConfigured) {
+  console.warn('Supabase credentials missing. Persistent database features will be disabled. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment, or configure them in Settings > Database Setup.');
 }
 
 export const supabase = createClient(

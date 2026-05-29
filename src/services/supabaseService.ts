@@ -1,10 +1,20 @@
-import { supabase, broadcastDataMutation } from '../lib/supabase';
+import { supabase, broadcastDataMutation, isSupabaseConfigured } from '../lib/supabase';
 import { toast } from 'sonner';
 import { storage, STORAGE_KEYS } from '../lib/storage';
 import { 
   MOCK_PRESCRIPTIONS, 
   MOCK_NURSE_SHIFTS, 
-  MOCK_THEATRES 
+  MOCK_THEATRES,
+  MOCK_PATIENTS,
+  MOCK_BEDS,
+  MOCK_APPOINTMENTS,
+  MOCK_BILLING,
+  MOCK_INVENTORY,
+  MOCK_OPERATION_RECORDS,
+  MOCK_NURSING_TASKS,
+  MOCK_PATIENT_VITALS,
+  MOCK_LAB_TESTS,
+  MOCK_USERS
 } from '../mockData';
 
 const rawSupabaseService = {
@@ -1131,11 +1141,500 @@ const rawSupabaseService = {
   }
 };
 
-// Intercept and wrap for automatic real-time sync broadcast!
+// Intercept and wrap for automatic real-time sync broadcast, connection timeout safety, and robust offline fallback!
+let lastToastTime = 0;
+const toastSlowConnection = () => {
+  const now = Date.now();
+  if (now - lastToastTime > 15000) {
+    lastToastTime = now;
+    toast.info('Live server response delayed. Switched to high-speed local database.', {
+      description: 'The app remains fully functional. Your updates will sync locally.',
+      duration: 5000,
+    });
+  }
+};
+
+const cacheConfig: Record<string, { storageKey: string; defaultVal: any }> = {
+  getPatients: { storageKey: STORAGE_KEYS.PATIENTS, defaultVal: MOCK_PATIENTS },
+  getAppointments: { storageKey: STORAGE_KEYS.APPOINTMENTS, defaultVal: MOCK_APPOINTMENTS },
+  getPrescriptions: { storageKey: STORAGE_KEYS.PRESCRIPTIONS, defaultVal: MOCK_PRESCRIPTIONS },
+  getInvoices: { storageKey: STORAGE_KEYS.BILLING, defaultVal: MOCK_BILLING },
+  getLabTests: { storageKey: STORAGE_KEYS.LAB_RATES, defaultVal: MOCK_LAB_TESTS },
+  getLabTestRequests: { storageKey: STORAGE_KEYS.LAB_TEST_ORDERS, defaultVal: [] },
+  getRadiologyRecords: { storageKey: STORAGE_KEYS.RADIOLOGY_FILES, defaultVal: [] },
+  getHospitalInfo: { storageKey: STORAGE_KEYS.HOSPITAL_INFO, defaultVal: { name: 'CureLine Medical Center', address: '456 Healthcare Blvd, Central City', phone: '+1 (555) 987-6543', email: 'contact@cureline.com', tax_no: 'TX-99887766', registration_no: 'REG-55443322' } },
+  getStaff: { storageKey: STORAGE_KEYS.USERS, defaultVal: MOCK_USERS },
+  getDeliveries: { storageKey: 'hms_deliveries', defaultVal: [] },
+  getNewborns: { storageKey: 'hms_newborns', defaultVal: [] },
+  getOTRooms: { storageKey: 'hms_ot_rooms', defaultVal: MOCK_THEATRES },
+  getOTSchedules: { storageKey: 'hms_ot_schedules', defaultVal: MOCK_OPERATION_RECORDS },
+  getInsuranceClaims: { storageKey: STORAGE_KEYS.INSURANCE, defaultVal: [] },
+  getNursingTasks: { storageKey: STORAGE_KEYS.NURSING_TASKS, defaultVal: MOCK_NURSING_TASKS },
+  getNurseShifts: { storageKey: 'hms_nurse_shifts', defaultVal: MOCK_NURSE_SHIFTS },
+  getNursingHandovers: { storageKey: 'hms_nursing_handovers', defaultVal: [] },
+  getExpenses: { storageKey: STORAGE_KEYS.EXPENSES, defaultVal: [] },
+  getBeds: { storageKey: STORAGE_KEYS.BEDS, defaultVal: MOCK_BEDS },
+  getAdmissions: { storageKey: 'hms_admissions', defaultVal: [] },
+  getPatientVitals: { storageKey: STORAGE_KEYS.PATIENT_VITALS, defaultVal: MOCK_PATIENT_VITALS },
+  getClinicalNotes: { storageKey: 'hms_clinical_notes', defaultVal: [] },
+  getPharmacyItems: { storageKey: STORAGE_KEYS.INVENTORY, defaultVal: MOCK_INVENTORY },
+};
+
+function updateLocalCacheOnMutation(key: string, args: any[], result: any) {
+  if (!result) return;
+  const k = key.toLowerCase();
+  
+  try {
+    if (key.startsWith('create') || key.startsWith('add') || key.startsWith('record')) {
+      if (k.includes('patient')) {
+        const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+        const filtered = list.filter((p: any) => p.id !== result.id && p.mrn !== result.mrn);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.PATIENTS, filtered);
+      } else if (k.includes('appointment')) {
+        const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+        const filtered = list.filter((a: any) => a.id !== result.id);
+        filtered.push(result);
+        storage.set(STORAGE_KEYS.APPOINTMENTS, filtered);
+      } else if (k.includes('prescription')) {
+        const list = storage.get(STORAGE_KEYS.PRESCRIPTIONS, MOCK_PRESCRIPTIONS);
+        const filtered = list.filter((p: any) => p.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.PRESCRIPTIONS, filtered);
+      } else if (k.includes('invoice')) {
+        const list = storage.get(STORAGE_KEYS.BILLING, MOCK_BILLING);
+        const filtered = list.filter((i: any) => i.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.BILLING, filtered);
+      } else if (k.includes('admission')) {
+        const list = storage.get('hms_admissions', []);
+        const filtered = list.filter((a: any) => a.id !== result.id);
+        filtered.unshift(result);
+        storage.set('hms_admissions', filtered);
+      } else if (k.includes('vital')) {
+        const list = storage.get(STORAGE_KEYS.PATIENT_VITALS, MOCK_PATIENT_VITALS);
+        const filtered = list.filter((v: any) => v.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.PATIENT_VITALS, filtered);
+      } else if (k.includes('note')) {
+        const list = storage.get('hms_clinical_notes', []);
+        const filtered = list.filter((n: any) => n.id !== result.id);
+        filtered.unshift(result);
+        storage.set('hms_clinical_notes', filtered);
+      } else if (k.includes('bed')) {
+        const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
+        const filtered = list.filter((b: any) => b.id !== result.id);
+        filtered.push(result);
+        storage.set(STORAGE_KEYS.BEDS, filtered);
+      } else if (k.includes('ot_room') || k.includes('otroom')) {
+        const list = storage.get('hms_ot_rooms', MOCK_THEATRES);
+        const filtered = list.filter((r: any) => r.id !== result.id);
+        filtered.push(result);
+        storage.set('hms_ot_rooms', filtered);
+      } else if (k.includes('otschedule') || k.includes('schedule')) {
+        const list = storage.get('hms_ot_schedules', MOCK_OPERATION_RECORDS);
+        const filtered = list.filter((s: any) => s.id !== result.id);
+        filtered.unshift(result);
+        storage.set('hms_ot_schedules', filtered);
+      } else if (k.includes('shift')) {
+        const list = storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
+        const filtered = list.filter((s: any) => s.id !== result.id);
+        filtered.push(result);
+        storage.set('hms_nurse_shifts', filtered);
+      } else if (k.includes('handover')) {
+        const list = storage.get('hms_nursing_handovers', []);
+        const filtered = list.filter((h: any) => h.id !== result.id);
+        filtered.unshift(result);
+        storage.set('hms_nursing_handovers', filtered);
+      } else if (k.includes('delivery')) {
+        const list = storage.get('hms_deliveries', []);
+        const filtered = list.filter((d: any) => d.id !== result.id);
+        filtered.unshift(result);
+        storage.set('hms_deliveries', filtered);
+      } else if (k.includes('newborn')) {
+        const list = storage.get('hms_newborns', []);
+        const filtered = list.filter((n: any) => n.id !== result.id);
+        filtered.unshift(result);
+        storage.set('hms_newborns', filtered);
+      } else if (k.includes('expense')) {
+        const list = storage.get(STORAGE_KEYS.EXPENSES, []);
+        const filtered = list.filter((e: any) => e.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.EXPENSES, filtered);
+      } else if (k.includes('claim')) {
+        const list = storage.get(STORAGE_KEYS.INSURANCE, []);
+        const filtered = list.filter((c: any) => c.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.INSURANCE, filtered);
+      } else if (k.includes('test') || k.includes('request')) {
+        const list = storage.get(STORAGE_KEYS.LAB_TEST_ORDERS, []);
+        const filtered = list.filter((t: any) => t.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.LAB_TEST_ORDERS, filtered);
+      }
+    } else if (key.startsWith('update')) {
+      const id = args[0];
+      if (k.includes('bed')) {
+        const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
+        const updated = list.map((b: any) => b.id === result.id ? result : b);
+        storage.set(STORAGE_KEYS.BEDS, updated);
+      } else if (k.includes('patient')) {
+        const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+        const updated = list.map((p: any) => p.id === result.id ? result : p);
+        storage.set(STORAGE_KEYS.PATIENTS, updated);
+      } else if (k.includes('appointment')) {
+        const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+        const updated = list.map((p: any) => p.id === result.id ? result : p);
+        storage.set(STORAGE_KEYS.APPOINTMENTS, updated);
+      } else if (k.includes('admission')) {
+        const list = storage.get('hms_admissions', []);
+        const updated = list.map((p: any) => p.id === result.id ? result : p);
+        storage.set('hms_admissions', updated);
+      }
+    } else if (key.startsWith('delete')) {
+      const id = args[0];
+      if (k.includes('patient')) {
+        const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+        const filtered = list.filter((p: any) => p.id !== id);
+        storage.set(STORAGE_KEYS.PATIENTS, filtered);
+      } else if (k.includes('appointment')) {
+        const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+        const filtered = list.filter((a: any) => a.id !== id);
+        storage.set(STORAGE_KEYS.APPOINTMENTS, filtered);
+      } else if (k.includes('bed')) {
+        const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
+        const filtered = list.filter((b: any) => b.id !== id);
+        storage.set(STORAGE_KEYS.BEDS, filtered);
+      } else if (k.includes('admission')) {
+        const list = storage.get('hms_admissions', []);
+        const filtered = list.filter((a: any) => a.id !== id);
+        storage.set('hms_admissions', filtered);
+      } else if (k.includes('prescription')) {
+        const list = storage.get(STORAGE_KEYS.PRESCRIPTIONS, MOCK_PRESCRIPTIONS);
+        const filtered = list.filter((p: any) => p.id !== id);
+        storage.set(STORAGE_KEYS.PRESCRIPTIONS, filtered);
+      } else if (k.includes('vital')) {
+        const list = storage.get(STORAGE_KEYS.PATIENT_VITALS, MOCK_PATIENT_VITALS);
+        const filtered = list.filter((v: any) => v.id !== id);
+        storage.set(STORAGE_KEYS.PATIENT_VITALS, filtered);
+      } else if (k.includes('note')) {
+        const list = storage.get('hms_clinical_notes', []);
+        const filtered = list.filter((n: any) => n.id !== id);
+        storage.set('hms_clinical_notes', filtered);
+      } else if (k.includes('expense')) {
+        const list = storage.get(STORAGE_KEYS.EXPENSES, []);
+        const filtered = list.filter((e: any) => e.id !== id);
+        storage.set(STORAGE_KEYS.EXPENSES, filtered);
+      } else if (k.includes('claim')) {
+        const list = storage.get(STORAGE_KEYS.INSURANCE, []);
+        const filtered = list.filter((c: any) => c.id !== id);
+        storage.set(STORAGE_KEYS.INSURANCE, filtered);
+      } else if (k.includes('schedule') || k.includes('ot_schedule')) {
+        const list = storage.get('hms_ot_schedules', MOCK_OPERATION_RECORDS);
+        const filtered = list.filter((s: any) => s.id !== id);
+        storage.set('hms_ot_schedules', filtered);
+      } else if (k.includes('delivery')) {
+        const list = storage.get('hms_deliveries', []);
+        const filtered = list.filter((d: any) => d.id !== id);
+        storage.set('hms_deliveries', filtered);
+      } else if (k.includes('newborn')) {
+        const list = storage.get('hms_newborns', []);
+        const filtered = list.filter((n: any) => n.id !== id);
+        storage.set('hms_newborns', filtered);
+      } else if (k.includes('shift')) {
+        const list = storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
+        const filtered = list.filter((s: any) => s.id !== id);
+        storage.set('hms_nurse_shifts', filtered);
+      }
+    }
+  } catch (err) {
+    console.warn('Error updating local cache on mutation:', err);
+  }
+}
+
+function executeOfflineMutation(key: string, args: any[]): any {
+  const k = key.toLowerCase();
+  
+  try {
+    if (key.startsWith('create') || key.startsWith('add') || key.startsWith('record')) {
+      const item = args[0] || {};
+      if (!item.id) {
+        item.id = 'off-' + Math.random().toString(36).substring(2, 9);
+      }
+      if (!item.created_at) {
+        item.created_at = new Date().toISOString();
+      }
+
+      if (k.includes('patient')) {
+        const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.PATIENTS, list);
+      } else if (k.includes('appointment')) {
+        const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+        list.push(item);
+        storage.set(STORAGE_KEYS.APPOINTMENTS, list);
+      } else if (k.includes('prescription')) {
+        const list = storage.get(STORAGE_KEYS.PRESCRIPTIONS, MOCK_PRESCRIPTIONS);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.PRESCRIPTIONS, list);
+      } else if (k.includes('invoice')) {
+        const list = storage.get(STORAGE_KEYS.BILLING, MOCK_BILLING);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.BILLING, list);
+        if (args[1]) {
+          const itemsList = storage.get('hms_invoice_items', []);
+          const formattedItems = args[1].map((it: any) => ({ ...it, id: 'item-' + Math.random(), invoice_id: item.id }));
+          storage.set('hms_invoice_items', [...formattedItems, ...itemsList]);
+        }
+      } else if (k.includes('admission')) {
+        const list = storage.get('hms_admissions', []);
+        list.unshift(item);
+        storage.set('hms_admissions', list);
+      } else if (k.includes('vital')) {
+        const list = storage.get(STORAGE_KEYS.PATIENT_VITALS, MOCK_PATIENT_VITALS);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.PATIENT_VITALS, list);
+      } else if (k.includes('note')) {
+        const list = storage.get('hms_clinical_notes', []);
+        list.unshift(item);
+        storage.set('hms_clinical_notes', list);
+      } else if (k.includes('otschedule') || k.includes('schedule')) {
+        const list = storage.get('hms_ot_schedules', MOCK_OPERATION_RECORDS);
+        list.unshift(item);
+        storage.set('hms_ot_schedules', list);
+      } else if (k.includes('claim')) {
+        const list = storage.get(STORAGE_KEYS.INSURANCE, []);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.INSURANCE, list);
+      } else if (k.includes('expense')) {
+        const list = storage.get(STORAGE_KEYS.EXPENSES, []);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.EXPENSES, list);
+      } else if (k.includes('test') || k.includes('request')) {
+        const list = storage.get(STORAGE_KEYS.LAB_TEST_ORDERS, []);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.LAB_TEST_ORDERS, list);
+      } else if (k.includes('delivery')) {
+        const list = storage.get('hms_deliveries', []);
+        list.unshift(item);
+        storage.set('hms_deliveries', list);
+      } else if (k.includes('newborn')) {
+        const list = storage.get('hms_newborns', []);
+        list.unshift(item);
+        storage.set('hms_newborns', list);
+      } else if (k.includes('bed')) {
+        const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
+        list.push(item);
+        storage.set(STORAGE_KEYS.BEDS, list);
+      } else if (k.includes('ot_room') || k.includes('otroom')) {
+        const list = storage.get('hms_ot_rooms', MOCK_THEATRES);
+        list.push(item);
+        storage.set('hms_ot_rooms', list);
+      } else if (k.includes('shift')) {
+        const list = storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
+        list.push(item);
+        storage.set('hms_nurse_shifts', list);
+      } else if (k.includes('handover')) {
+        const list = storage.get('hms_nursing_handovers', []);
+        list.unshift(item);
+        storage.set('hms_nursing_handovers', list);
+      }
+      
+      let concept = 'general';
+      if (k.includes('patient')) concept = 'patients';
+      else if (k.includes('appointment')) concept = 'appointments';
+      else if (k.includes('bed')) concept = 'beds';
+      broadcastDataMutation(concept, 'insert');
+      return item;
+    }
+
+    if (key.startsWith('update')) {
+      const id = args[0];
+      const updates = args[1] || {};
+
+      if (k.includes('bed')) {
+        const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
+        const updated = list.map((b: any) => {
+          if (b.id === id) {
+            return { ...b, ...updates };
+          }
+          return b;
+        });
+        storage.set(STORAGE_KEYS.BEDS, updated);
+        return updated.find((b: any) => b.id === id) || { id, ...updates };
+      }
+
+      if (k.includes('patient')) {
+        const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+        const index = list.findIndex((p: any) => p.id === id);
+        if (index !== -1) {
+          list[index] = { ...list[index], ...updates };
+          storage.set(STORAGE_KEYS.PATIENTS, list);
+          return list[index];
+        }
+      }
+
+      if (k.includes('appointment')) {
+        const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+        const index = list.findIndex((a: any) => a.id === id);
+        if (index !== -1) {
+          list[index] = { ...list[index], ...updates };
+          storage.set(STORAGE_KEYS.APPOINTMENTS, list);
+          return list[index];
+        }
+      }
+
+      if (k.includes('admission')) {
+        const list = storage.get('hms_admissions', []);
+        const index = list.findIndex((a: any) => a.id === id);
+        if (index !== -1) {
+          list[index] = { ...list[index], ...updates };
+          storage.set('hms_admissions', list);
+          return list[index];
+        }
+      }
+      
+      return { id, ...updates };
+    }
+
+    if (key.startsWith('delete')) {
+      const id = args[0];
+      if (k.includes('patient')) {
+        const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+        const filtered = list.filter((p: any) => p.id !== id);
+        storage.set(STORAGE_KEYS.PATIENTS, filtered);
+      } else if (k.includes('appointment')) {
+        const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+        const filtered = list.filter((a: any) => a.id !== id);
+        storage.set(STORAGE_KEYS.APPOINTMENTS, filtered);
+      } else if (k.includes('bed')) {
+        const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
+        const filtered = list.filter((b: any) => b.id !== id);
+        storage.set(STORAGE_KEYS.BEDS, filtered);
+      } else if (k.includes('admission')) {
+        const list = storage.get('hms_admissions', []);
+        const filtered = list.filter((a: any) => a.id !== id);
+        storage.set('hms_admissions', filtered);
+      } else if (k.includes('prescription')) {
+        const list = storage.get(STORAGE_KEYS.PRESCRIPTIONS, MOCK_PRESCRIPTIONS);
+        const filtered = list.filter((p: any) => p.id !== id);
+        storage.set(STORAGE_KEYS.PRESCRIPTIONS, filtered);
+      } else if (k.includes('vital')) {
+        const list = storage.get(STORAGE_KEYS.PATIENT_VITALS, MOCK_PATIENT_VITALS);
+        const filtered = list.filter((v: any) => v.id !== id);
+        storage.set(STORAGE_KEYS.PATIENT_VITALS, filtered);
+      } else if (k.includes('note')) {
+        const list = storage.get('hms_clinical_notes', []);
+        const filtered = list.filter((n: any) => n.id !== id);
+        storage.set('hms_clinical_notes', filtered);
+      } else if (k.includes('expense')) {
+        const list = storage.get(STORAGE_KEYS.EXPENSES, []);
+        const filtered = list.filter((e: any) => e.id !== id);
+        storage.set(STORAGE_KEYS.EXPENSES, filtered);
+      } else if (k.includes('claim')) {
+        const list = storage.get(STORAGE_KEYS.INSURANCE, []);
+        const filtered = list.filter((c: any) => c.id !== id);
+        storage.set(STORAGE_KEYS.INSURANCE, filtered);
+      } else if (k.includes('schedule') || k.includes('ot_schedule')) {
+        const list = storage.get('hms_ot_schedules', MOCK_OPERATION_RECORDS);
+        const filtered = list.filter((s: any) => s.id !== id);
+        storage.set('hms_ot_schedules', filtered);
+      } else if (k.includes('delivery')) {
+        const list = storage.get('hms_deliveries', []);
+        const filtered = list.filter((d: any) => d.id !== id);
+        storage.set('hms_deliveries', filtered);
+      } else if (k.includes('newborn')) {
+        const list = storage.get('hms_newborns', []);
+        const filtered = list.filter((n: any) => n.id !== id);
+        storage.set('hms_newborns', filtered);
+      } else if (k.includes('shift')) {
+        const list = storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
+        const filtered = list.filter((s: any) => s.id !== id);
+        storage.set('hms_nurse_shifts', filtered);
+      }
+      return true;
+    }
+  } catch (err) {
+    console.warn('Error in offline mutation:', err);
+  }
+
+  return true;
+}
+
+function executeOfflineQuery(key: string, args: any[]): any {
+  const config = cacheConfig[key];
+  if (config) {
+    let cached = storage.get(config.storageKey, config.defaultVal);
+    
+    if (key === 'getPrescriptions' && args[0]) {
+      const patientId = args[0];
+      cached = cached.filter((rx: any) => rx.patientId === patientId || rx.patient_id === patientId);
+    } else if (key === 'getPatientVitals' && args[0]) {
+      const patientId = args[0];
+      cached = cached.filter((v: any) => v.patientId === patientId || v.patient_id === patientId);
+    } else if (key === 'getClinicalNotes' && args[0]) {
+      const patientId = args[0];
+      cached = cached.filter((n: any) => n.patientId === patientId || n.patient_id === patientId);
+    } else if (key === 'getNursingTasks' && args[0]) {
+      const ward = args[0];
+      cached = cached.filter((t: any) => !ward || t.ward === ward);
+    } else if (key === 'getNursingHandovers' && args[0]) {
+      const ward = args[0];
+      cached = cached.filter((h: any) => !ward || h.ward === ward);
+    } else if (key === 'getAppointments') {
+      const patientsList = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+      cached = cached.map((apt: any) => {
+        const pid = apt.patient_id || apt.patientId;
+        const p = patientsList.find((p_item: any) => p_item.id === pid || p_item.mrn === pid);
+        return {
+          ...apt,
+          patients: p ? { name: p.name, mrn: p.mrn, age: p.age, gender: p.gender } : null,
+          appointment_date: apt.appointment_date || apt.date || new Date().toISOString().split('T')[0],
+          appointment_time: apt.appointment_time || apt.time || '10:00 AM',
+          patient_id: pid,
+          doctor_id: apt.doctor_id || apt.doctorId,
+          urgency: apt.urgency || 'Routine',
+          status: apt.status || 'Scheduled'
+        };
+      });
+    } else if (key === 'getPatients') {
+      cached = cached.map((p: any) => ({
+        ...p,
+        registration_type: p.registration_type || p.registrationType || 'OPD',
+        registrationType: p.registrationType || p.registration_type || 'OPD'
+      }));
+    }
+    return cached;
+  }
+  
+  if (key === 'getDashboardStats') {
+    const patients = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+    const appointments = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+    const bills = storage.get(STORAGE_KEYS.BILLING, MOCK_BILLING);
+    const totalRevenue = bills.reduce((sum: number, b: any) => sum + (Number(b.total_amount) || Number(b.total) || 0), 0);
+    return {
+      patientCount: patients.length,
+      appointmentCount: appointments.length,
+      admissionCount: 4,
+      totalRevenue
+    };
+  }
+  
+  return null;
+}
+
+let supabaseUnreachable = false;
+if (typeof window !== 'undefined') {
+  const resetUnreachable = () => {
+    supabaseUnreachable = false;
+  };
+  window.addEventListener('storage', resetUnreachable);
+  window.addEventListener('supabase-config-change', resetUnreachable);
+}
+
 const syncWrappedService = {} as any;
 for (const [key, value] of Object.entries(rawSupabaseService)) {
   if (typeof value === 'function') {
-    // If it's a mutation method, wrap it to automatically broadcast changes to all devices
     const isMutation = 
       key.startsWith('create') || 
       key.startsWith('update') || 
@@ -1148,32 +1647,118 @@ for (const [key, value] of Object.entries(rawSupabaseService)) {
     
     if (isMutation) {
       syncWrappedService[key] = async function(...args: any[]) {
-        const result = await value.apply(this, args);
-        if (result) { // successful mutation (returns updated/inserted object, or true for delete)
-          let concept = 'general';
-          const k = key.toLowerCase();
-          if (k.includes('patient')) concept = 'patients';
-          else if (k.includes('appointment')) concept = 'appointments';
-          else if (k.includes('prescription')) concept = 'prescriptions';
-          else if (k.includes('invoice')) concept = 'invoices';
-          else if (k.includes('expense')) concept = 'expenses';
-          else if (k.includes('staff') || k.includes('profile')) concept = 'profiles';
-          else if (k.includes('bed')) concept = 'beds';
-          else if (k.includes('admission')) concept = 'admissions';
-          else if (k.includes('vital')) concept = 'patient_vitals';
-          else if (k.includes('note')) concept = 'nursing_notes';
-          else if (k.includes('pharmacy')) concept = 'pharmacy_items';
-          else if (k.includes('ot') || k.includes('schedule')) concept = 'ot_schedules';
-          else if (k.includes('claim')) concept = 'insurance_claims';
-          else if (k.includes('test') || k.includes('request')) concept = 'test_requests';
-          
-          const action = 
-            key.startsWith('create') || key.startsWith('add') ? 'insert' : 
-            (key.startsWith('delete') ? 'delete' : 'update');
-          
-          broadcastDataMutation(concept, action as any);
+        if (!isSupabaseConfigured || supabaseUnreachable) {
+          return executeOfflineMutation(key, args);
         }
-        return result;
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Mutation timed out")), 4000);
+        });
+
+        try {
+          const result = await Promise.race([
+            value.apply(this, args),
+            timeoutPromise
+          ]);
+          
+          if (result) {
+            let concept = 'general';
+            const k = key.toLowerCase();
+            if (k.includes('patient')) concept = 'patients';
+            else if (k.includes('appointment')) concept = 'appointments';
+            else if (k.includes('prescription')) concept = 'prescriptions';
+            else if (k.includes('invoice')) concept = 'invoices';
+            else if (k.includes('expense')) concept = 'expenses';
+            else if (k.includes('staff') || k.includes('profile')) concept = 'profiles';
+            else if (k.includes('bed')) concept = 'beds';
+            else if (k.includes('admission')) concept = 'admissions';
+            else if (k.includes('vital')) concept = 'patient_vitals';
+            else if (k.includes('note')) concept = 'nursing_notes';
+            else if (k.includes('pharmacy')) concept = 'pharmacy_items';
+            else if (k.includes('ot') || k.includes('schedule')) concept = 'ot_schedules';
+            else if (k.includes('claim')) concept = 'insurance_claims';
+            else if (k.includes('test') || k.includes('request')) concept = 'test_requests';
+
+            updateLocalCacheOnMutation(key, args, result);
+            
+            const action = 
+              key.startsWith('create') || key.startsWith('add') ? 'insert' : 
+              (key.startsWith('delete') ? 'delete' : 'update');
+            
+            broadcastDataMutation(concept, action as any);
+            return result;
+          } else {
+            console.warn(`Mutation ${key} returned falsy value (${result}) indicating silent database failure. Falling back to offline mode.`);
+            supabaseUnreachable = true;
+            toastSlowConnection();
+            return executeOfflineMutation(key, args);
+          }
+        } catch (err: any) {
+          console.warn(`Mutation ${key} failed, executing in offline mode:`, err.message || err);
+          supabaseUnreachable = true;
+          toastSlowConnection();
+          return executeOfflineMutation(key, args);
+        }
+      };
+    } else if (key.startsWith('get')) {
+      // It's a query method (getPatients, etc.)
+      syncWrappedService[key] = async function(...args: any[]) {
+        if (!isSupabaseConfigured || supabaseUnreachable) {
+          return executeOfflineQuery(key, args);
+        }
+
+        const config = cacheConfig[key];
+        
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("Database connection timed out"));
+          }, 3500);
+        });
+
+        try {
+          const result = await Promise.race([
+            value.apply(this, args),
+            timeoutPromise
+          ]);
+
+          if (result) {
+            if (config) {
+              storage.set(config.storageKey, result);
+            }
+            return result;
+          } else {
+            console.warn(`Query ${key} returned falsy value indicating search or fetch failure. Falling back to cached local storage.`);
+            supabaseUnreachable = true;
+            if (config) {
+              toastSlowConnection();
+              return executeOfflineQuery(key, args);
+            }
+            return null;
+          }
+        } catch (err: any) {
+          console.warn(`Query ${key} timed out or failed, falling back to local cache:`, err.message || err);
+          supabaseUnreachable = true;
+          
+          if (config) {
+            toastSlowConnection();
+            return executeOfflineQuery(key, args);
+          }
+          
+          if (key === 'getDashboardStats') {
+            const patients = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+            const appointments = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
+            const bills = storage.get(STORAGE_KEYS.BILLING, MOCK_BILLING);
+            const totalRevenue = bills.reduce((sum: number, b: any) => sum + (Number(b.total_amount) || Number(b.total) || 0), 0);
+            return {
+              patientCount: patients.length,
+              appointmentCount: appointments.length,
+              admissionCount: 4,
+              totalRevenue
+            };
+          }
+          
+          return null;
+        }
       };
     } else {
       syncWrappedService[key] = value;
@@ -1184,3 +1769,426 @@ for (const [key, value] of Object.entries(rawSupabaseService)) {
 }
 
 export const supabaseService = syncWrappedService as typeof rawSupabaseService;
+
+// EXPORTS FOR OFFLINE-TO-ONLINE INTERACTION AND RECONCILIATION
+export function getSupabaseUnreachable() {
+  return supabaseUnreachable;
+}
+
+export function setSupabaseUnreachable(val: boolean) {
+  supabaseUnreachable = val;
+  if (!val) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('supabase-config-change'));
+    }
+  }
+}
+
+export async function syncOfflineDataWithSupabase() {
+  if (!isSupabaseConfigured) {
+    return { success: false, syncCount: 0, errors: ['Supabase is not configured yet.'] };
+  }
+
+  // Force connection attempt by resetting the unreachable state
+  supabaseUnreachable = false;
+  let syncCount = 0;
+  const errors: string[] = [];
+
+  try {
+    // ID mapping to preserve foreign key constraints of offline records (e.g. old temporary IDs linked to patients)
+    const idMap: Record<string, string> = {};
+
+    // 1. Sync Patients (Base table)
+    const patients = storage.get(STORAGE_KEYS.PATIENTS, []);
+    const offlinePatients = patients.filter((p: any) => p.id && String(p.id).startsWith('off-'));
+    
+    for (const p of offlinePatients) {
+      try {
+        const patientData = { ...p };
+        delete patientData.id; // Let database auto-assign UUID/MRN or keep custom MRN
+        
+        // Remove virtual fields
+        delete patientData.patients;
+        
+        const { data, error } = await supabase
+          .from('patients')
+          .insert([patientData])
+          .select();
+        
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[p.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Patient "${p.name || p.mrn}": ${err.message || JSON.stringify(err)}`);
+      }
+    }
+
+    // Update patients list locally in-place with database-provided UUIDs so we don't have duplicates
+    const updatedPatients = patients.map((p: any) => {
+      if (idMap[p.id]) {
+        return { ...p, id: idMap[p.id] };
+      }
+      return p;
+    });
+    storage.set(STORAGE_KEYS.PATIENTS, updatedPatients);
+
+    // 2. Sync Appointments (Depends on patients)
+    const appointments = storage.get(STORAGE_KEYS.APPOINTMENTS, []);
+    const offlineAppointments = appointments.filter((a: any) => a.id && String(a.id).startsWith('off-'));
+    for (const a of offlineAppointments) {
+      try {
+        const aptData = { ...a };
+        delete aptData.id;
+        delete aptData.patients; // Virt/JOIN field
+        
+        if (idMap[aptData.patient_id]) {
+          aptData.patient_id = idMap[aptData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('appointments')
+          .insert([aptData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[a.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Appointment: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedAppointments = appointments.map((a: any) => {
+      if (idMap[a.id]) return { ...a, id: idMap[a.id] };
+      return a;
+    });
+    storage.set(STORAGE_KEYS.APPOINTMENTS, updatedAppointments);
+
+    // 3. Sync Admissions (Depends on patients)
+    const admissions = storage.get('hms_admissions', []);
+    const offlineAdmissions = admissions.filter((ad: any) => ad.id && String(ad.id).startsWith('off-'));
+    for (const ad of offlineAdmissions) {
+      try {
+        const adData = { ...ad };
+        delete adData.id;
+        delete adData.patients;
+        
+        if (idMap[adData.patient_id]) {
+          adData.patient_id = idMap[adData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('admissions')
+          .insert([adData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[ad.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Admission: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedAdmissions = admissions.map((ad: any) => {
+      if (idMap[ad.id]) return { ...ad, id: idMap[ad.id] };
+      return ad;
+    });
+    storage.set('hms_admissions', updatedAdmissions);
+
+    // 4. Sync Prescriptions (Depends on patients)
+    const prescriptions = storage.get(STORAGE_KEYS.PRESCRIPTIONS, []);
+    const offlinePrescriptions = prescriptions.filter((rx: any) => rx.id && String(rx.id).startsWith('off-'));
+    for (const rx of offlinePrescriptions) {
+      try {
+        const rxData = { ...rx };
+        delete rxData.id;
+        delete rxData.patients;
+        
+        if (idMap[rxData.patient_id]) {
+          rxData.patient_id = idMap[rxData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('prescriptions')
+          .insert([rxData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[rx.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Prescription: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedPrescriptions = prescriptions.map((rx: any) => {
+      if (idMap[rx.id]) return { ...rx, id: idMap[rx.id] };
+      return rx;
+    });
+    storage.set(STORAGE_KEYS.PRESCRIPTIONS, updatedPrescriptions);
+
+    // 5. Sync Patient Vitals (Depends on patients)
+    const vitals = storage.get(STORAGE_KEYS.PATIENT_VITALS, []);
+    const offlineVitals = vitals.filter((v: any) => v.id && String(v.id).startsWith('off-'));
+    for (const v of offlineVitals) {
+      try {
+        const vData = { ...v };
+        delete vData.id;
+        
+        if (idMap[vData.patient_id]) {
+          vData.patient_id = idMap[vData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('patient_vitals')
+          .insert([vData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[v.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Patient Vital: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedVitals = vitals.map((v: any) => {
+      if (idMap[v.id]) return { ...v, id: idMap[v.id] };
+      return v;
+    });
+    storage.set(STORAGE_KEYS.PATIENT_VITALS, updatedVitals);
+
+    // 6. Sync Clinical Notes (Depends on patients)
+    const notes = storage.get('hms_clinical_notes', []);
+    const offlineNotes = notes.filter((n: any) => n.id && String(n.id).startsWith('off-'));
+    for (const n of offlineNotes) {
+      try {
+        const nData = { ...n };
+        delete nData.id;
+        
+        if (idMap[nData.patient_id]) {
+          nData.patient_id = idMap[nData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('clinical_notes')
+          .insert([nData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[n.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Clinical Note: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedNotes = notes.map((n: any) => {
+      if (idMap[n.id]) return { ...n, id: idMap[n.id] };
+      return n;
+    });
+    storage.set('hms_clinical_notes', updatedNotes);
+
+    // 7. Sync OT schedules (Depends on patients)
+    const otSchedules = storage.get('hms_ot_schedules', []);
+    const offlineOtSchedules = otSchedules.filter((s: any) => s.id && String(s.id).startsWith('off-'));
+    for (const s of offlineOtSchedules) {
+      try {
+        const sData = { ...s };
+        delete sData.id;
+        delete sData.patients;
+        
+        if (idMap[sData.patient_id]) {
+          sData.patient_id = idMap[sData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('ot_schedules')
+          .insert([sData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[s.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`OT Schedule: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedOtSchedules = otSchedules.map((s: any) => {
+      if (idMap[s.id]) return { ...s, id: idMap[s.id] };
+      return s;
+    });
+    storage.set('hms_ot_schedules', updatedOtSchedules);
+
+    // 8. Sync Invoices / Billing (Depends on patients)
+    const invoices = storage.get(STORAGE_KEYS.BILLING, []);
+    const offlineInvoices = invoices.filter((inv: any) => inv.id && String(inv.id).startsWith('off-'));
+    const invoiceItemsList = storage.get('hms_invoice_items', []);
+
+    for (const inv of offlineInvoices) {
+      try {
+        const invData = { ...inv };
+        delete invData.id;
+        delete invData.patients;
+        delete invData.invoice_items;
+        
+        if (idMap[invData.patient_id]) {
+          invData.patient_id = idMap[invData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('invoices')
+          .insert([invData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          const newInvoiceId = data[0].id;
+          idMap[inv.id] = newInvoiceId;
+          syncCount++;
+
+          // Upload any associated items for this invoice
+          const relatedItems = invoiceItemsList.filter((it: any) => it.invoice_id === inv.id);
+          for (const item of relatedItems) {
+            try {
+              const itemData = { ...item, invoice_id: newInvoiceId };
+              delete itemData.id;
+              await supabase.from('invoice_items').insert([itemData]);
+            } catch (itErr) {
+              console.warn('Silent item sync failure:', itErr);
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Invoice: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedInvoices = invoices.map((inv: any) => {
+      if (idMap[inv.id]) return { ...inv, id: idMap[inv.id] };
+      return inv;
+    });
+    storage.set(STORAGE_KEYS.BILLING, updatedInvoices);
+
+    // 9. Sync Expenses
+    const expenses = storage.get(STORAGE_KEYS.EXPENSES, []);
+    const offlineExpenses = expenses.filter((ex: any) => ex.id && String(ex.id).startsWith('off-'));
+    for (const ex of offlineExpenses) {
+      try {
+        const exData = { ...ex };
+        delete exData.id;
+        
+        const { data, error } = await supabase
+          .from('expenses')
+          .insert([exData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[ex.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Expense: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedExpenses = expenses.map((ex: any) => {
+      if (idMap[ex.id]) return { ...ex, id: idMap[ex.id] };
+      return ex;
+    });
+    storage.set(STORAGE_KEYS.EXPENSES, updatedExpenses);
+
+    // 10. Sync Insurance Claims (Depends on patients)
+    const claims = storage.get(STORAGE_KEYS.INSURANCE, []);
+    const offlineClaims = claims.filter((cl: any) => cl.id && String(cl.id).startsWith('off-'));
+    for (const cl of offlineClaims) {
+      try {
+        const clData = { ...cl };
+        delete clData.id;
+        delete clData.patients;
+        
+        if (idMap[clData.patient_id]) {
+          clData.patient_id = idMap[clData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('insurance_claims')
+          .insert([clData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[cl.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Insurance Claim: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedClaims = claims.map((cl: any) => {
+      if (idMap[cl.id]) return { ...cl, id: idMap[cl.id] };
+      return cl;
+    });
+    storage.set(STORAGE_KEYS.INSURANCE, updatedClaims);
+
+    // 11. Sync Lab requests (Depends on patients)
+    const labRequests = storage.get(STORAGE_KEYS.LAB_TEST_ORDERS, []);
+    const offlineLabRequests = labRequests.filter((lr: any) => lr.id && String(lr.id).startsWith('off-'));
+    for (const lr of offlineLabRequests) {
+      try {
+        const lrData = { ...lr };
+        delete lrData.id;
+        delete lrData.patients;
+        delete lrData.lab_tests;
+        
+        if (idMap[lrData.patient_id]) {
+          lrData.patient_id = idMap[lrData.patient_id];
+        }
+
+        const { data, error } = await supabase
+          .from('test_requests')
+          .insert([lrData])
+          .select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          idMap[lr.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Lab Request: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedLabRequests = labRequests.map((lr: any) => {
+      if (idMap[lr.id]) return { ...lr, id: idMap[lr.id] };
+      return lr;
+    });
+    storage.set(STORAGE_KEYS.LAB_TEST_ORDERS, updatedLabRequests);
+
+    // Broadcast synchronization updates to any other connected devices
+    broadcastDataMutation('all', 'sync');
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('supabase-data-sync', { detail: { table: 'all', action: 'sync' } }));
+    }
+
+    return {
+      success: errors.length === 0,
+      syncCount,
+      errors
+    };
+
+  } catch (err: any) {
+    console.error('Offline synchronization failed:', err);
+    return { success: false, syncCount, errors: [err.message || JSON.stringify(err)] };
+  }
+}

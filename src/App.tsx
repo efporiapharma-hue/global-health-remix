@@ -62,6 +62,7 @@ import Login from './components/Login';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
 import { MOCK_PATIENTS, MOCK_USERS } from './mockData';
 import { User as UserType } from './types';
+import { supabaseService } from '@/services/supabaseService';
 
 const navItems = [
   { name: 'Dashboard', icon: LayoutDashboard, path: '/', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE', 'LAB_STAFF', 'PHARMACIST', 'ACCOUNTANT'] },
@@ -160,7 +161,7 @@ function SidebarContent({ onLogout, user, hospitalInfo }: { onLogout: () => void
   );
 }
 
-function QuickRegisterForm() {
+function QuickRegisterForm({ currentUser }: { currentUser: UserType | null }) {
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -168,42 +169,94 @@ function QuickRegisterForm() {
     gender: 'male',
     facility: 'OPD'
   });
+  const [isRegistering, setIsRegistering] = useState(false);
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
     if (!formData.name || !formData.phone) {
       toast.error('Please fill in required fields');
       return;
     }
 
-    const currentPatients = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
+    setIsRegistering(true);
     const mrn = `MRN${Math.floor(Math.random() * 90000) + 10000}`;
     
-    let registrationType = 'Quick';
-    if (formData.facility === 'Lab') registrationType = 'Quick-Lab';
-    else if (formData.facility === 'Pharmacy') registrationType = 'Quick-Pharmacy';
-    else if (formData.facility === 'Radiology') registrationType = 'Quick-Radiology';
-    else if (formData.facility === 'OPD') registrationType = 'OPD/IPD';
+    let registration_type = 'OPD';
+    if (formData.facility === 'Lab') registration_type = 'Quick-Lab';
+    else if (formData.facility === 'Pharmacy') registration_type = 'Quick-Pharmacy';
+    else if (formData.facility === 'Radiology') registration_type = 'Quick-Radiology';
+    else if (formData.facility === 'OPD') registration_type = 'OPD';
 
     const patientToAdd = {
-      id: `p-quick-${Date.now()}`,
       name: formData.name,
       phone: formData.phone,
       age: Number(formData.age) || 0,
       gender: formData.gender,
       mrn,
-      status: 'Stable',
-      lastVisit: new Date().toISOString().split('T')[0],
-      registrationType
+      status: 'Active',
+      registration_type
     };
 
-    const updatedPatients = [patientToAdd, ...currentPatients];
-    storage.set(STORAGE_KEYS.PATIENTS, updatedPatients);
-    
-    // Trigger storage event for other components to update
-    window.dispatchEvent(new Event('storage'));
-    
-    toast.success(`Patient registered successfully for ${formData.facility}! MRN: ${mrn}`);
-    setFormData({ name: '', phone: '', age: '', gender: 'male', facility: 'OPD' });
+    try {
+      // 1. Save patient inside Supabase DB
+      const result = await supabaseService.createPatient(patientToAdd);
+      
+      if (result) {
+        // 2. If OPD Consultation chosen, book consultation and registration fee invoice
+        if (formData.facility === 'OPD') {
+          const appointmentDate = new Date().toISOString().split('T')[0];
+          const appointmentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) || '10:00 AM';
+          
+          const appointmentSynced = await supabaseService.createAppointment({
+            patient_id: result.id,
+            doctor_id: null,
+            type: 'OPD',
+            appointment_date: appointmentDate,
+            appointment_time: appointmentTime,
+            status: 'Scheduled',
+            urgency: 'Routine'
+          });
+
+          if (appointmentSynced) {
+            const regFee = 200;
+            const invoiceData = {
+              patient_id: result.id,
+              invoice_number: `INV-REG-${Date.now()}`,
+              status: 'Unpaid',
+              total_amount: regFee,
+              paid_amount: 0,
+              payment_method: 'Cash',
+              type: 'OPD',
+              created_by: currentUser?.id
+            };
+
+            const invoiceItems = [{
+              item_name: 'OPD Registration Fee',
+              item_type: 'Consultation',
+              quantity: 1,
+              unit_price: regFee,
+              total_price: regFee
+            }];
+
+            await supabaseService.createInvoice(invoiceData, invoiceItems);
+          }
+        }
+
+        // Trigger real-time sync custom event so any active OPD or components refetch immediately
+        window.dispatchEvent(new CustomEvent('supabase-data-sync', { 
+          detail: { table: 'patients', action: 'insert' } 
+        }));
+
+        toast.success(`Patient registered successfully for ${formData.facility}! MRN: ${mrn}`);
+        setFormData({ name: '', phone: '', age: '', gender: 'male', facility: 'OPD' });
+      } else {
+        toast.error('Failed to register patient in database');
+      }
+    } catch (err: any) {
+      console.error('Error in handleRegister:', err);
+      toast.error('Failed to register brand new patient due to database error.');
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
   return (
@@ -215,6 +268,7 @@ function QuickRegisterForm() {
             id="header-name" 
             placeholder="Enter patient name" 
             value={formData.name}
+            disabled={isRegistering}
             onChange={(e) => setFormData({...formData, name: e.target.value})}
           />
         </div>
@@ -223,6 +277,7 @@ function QuickRegisterForm() {
           <Input 
             id="header-phone" 
             placeholder="Enter phone number" 
+            disabled={isRegistering}
             value={formData.phone}
             onChange={(e) => setFormData({...formData, phone: e.target.value})}
           />
@@ -233,6 +288,7 @@ function QuickRegisterForm() {
             id="header-age" 
             type="number" 
             placeholder="Age" 
+            disabled={isRegistering}
             value={formData.age}
             onChange={(e) => setFormData({...formData, age: e.target.value})}
           />
@@ -241,6 +297,7 @@ function QuickRegisterForm() {
           <Label htmlFor="header-gender">Gender</Label>
           <Select 
             value={formData.gender}
+            disabled={isRegistering}
             onValueChange={(v) => setFormData({...formData, gender: v})}
           >
             <SelectTrigger>
@@ -257,6 +314,7 @@ function QuickRegisterForm() {
           <Label htmlFor="header-facility">Facility / Purpose</Label>
           <Select 
             value={formData.facility}
+            disabled={isRegistering}
             onValueChange={(v) => setFormData({...formData, facility: v})}
           >
             <SelectTrigger>
@@ -272,8 +330,10 @@ function QuickRegisterForm() {
         </div>
       </div>
       <DialogFooter>
-        <Button variant="outline" onClick={() => setFormData({ name: '', phone: '', age: '', gender: 'male', facility: 'OPD' })}>Reset</Button>
-        <Button className="bg-medical-blue" onClick={handleRegister}>Confirm Registration</Button>
+        <Button variant="outline" disabled={isRegistering} onClick={() => setFormData({ name: '', phone: '', age: '', gender: 'male', facility: 'OPD' })}>Reset</Button>
+        <Button className="bg-medical-blue" disabled={isRegistering} onClick={handleRegister}>
+          {isRegistering ? 'Registering...' : 'Confirm Registration'}
+        </Button>
       </DialogFooter>
     </div>
   );
@@ -386,7 +446,7 @@ export default function App() {
                     <DialogHeader>
                       <DialogTitle>Quick Patient Registration</DialogTitle>
                     </DialogHeader>
-                    <QuickRegisterForm />
+                    <QuickRegisterForm currentUser={user} />
                   </DialogContent>
                 </Dialog>
               )}

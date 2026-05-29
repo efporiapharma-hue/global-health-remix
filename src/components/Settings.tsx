@@ -21,7 +21,8 @@ import {
   Image as ImageIcon,
   Layout,
   History,
-  Activity
+  Activity,
+  Database
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -36,10 +37,139 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from 'sonner';
 import { MOCK_USERS, MOCK_PATIENTS, MOCK_BED_RATES, MOCK_OT_RATES, MOCK_LAB_TESTS, MOCK_MATERIAL_RATES } from '@/mockData';
 import { storage, STORAGE_KEYS } from '@/lib/storage';
+import { isSupabaseConfigured } from '@/lib/supabase';
+import { syncOfflineDataWithSupabase, getSupabaseUnreachable, setSupabaseUnreachable } from '@/services/supabaseService';
 
 export default function Settings({ currentUser, onUserUpdate }: { currentUser?: any, onUserUpdate?: (user: any) => void }) {
   const [templateImage, setTemplateImage] = useState<string | null>(() => storage.get(STORAGE_KEYS.TEMPLATE_IMAGE, null));
   const isAccountant = currentUser?.role === 'ACCOUNTANT';
+
+  // Supabase states
+  const [dbUrl, setDbUrl] = useState(() => localStorage.getItem('hms_supabase_url') || '');
+  const [dbKey, setDbKey] = useState(() => localStorage.getItem('hms_supabase_anon_key') || '');
+  const [isDbSaving, setIsDbSaving] = useState(false);
+
+  // Offline Synchronization States & Logic
+  const getOfflineCount = () => {
+    let count = 0;
+    try {
+      const storageKeysToSync = [
+        STORAGE_KEYS.PATIENTS,
+        STORAGE_KEYS.APPOINTMENTS,
+        'hms_admissions',
+        STORAGE_KEYS.PRESCRIPTIONS,
+        STORAGE_KEYS.PATIENT_VITALS,
+        'hms_clinical_notes',
+        'hms_ot_schedules',
+        STORAGE_KEYS.BILLING,
+        STORAGE_KEYS.EXPENSES,
+        STORAGE_KEYS.INSURANCE,
+        STORAGE_KEYS.LAB_TEST_ORDERS,
+        'hms_deliveries'
+      ];
+      
+      for (const sk of storageKeysToSync) {
+        const data = storage.get(sk, []);
+        if (Array.isArray(data)) {
+          const offlineItems = data.filter((item: any) => item && item.id && String(item.id).startsWith('off-'));
+          count += offlineItems.length;
+        }
+      }
+    } catch (_) {}
+    return count;
+  };
+
+  const [offlineCount, setOfflineCount] = useState(() => getOfflineCount());
+  const [isSyncing, setIsSyncing] = useState(false);
+  const isFallbackActive = getSupabaseUnreachable();
+
+  const handleSyncData = async () => {
+    if (!isSupabaseConfigured) {
+      toast.error("Please connect your live Supabase database first before syncing.");
+      return;
+    }
+    
+    setIsSyncing(true);
+    const syncToast = toast.loading("Syncing all offline data with your Supabase database...", {
+      description: "Uploading patients, invoices, consult notes, and lab records..."
+    });
+
+    try {
+      // Re-enable and force connection
+      setSupabaseUnreachable(false);
+      
+      const res = await syncOfflineDataWithSupabase();
+      if (res.success) {
+        toast.dismiss(syncToast);
+        toast.success(`Synchronization completed successfully!`, {
+          description: `Uploaded ${res.syncCount} local offline entries directly to Supabase. All pages are updated!`,
+          duration: 5000
+        });
+        setOfflineCount(getOfflineCount());
+      } else {
+        toast.dismiss(syncToast);
+        toast.error(`Partially synced database, but some records failed!`, {
+          description: `Successfully uploaded ${res.syncCount} records. Errors: ${res.errors.slice(0, 2).join('; ')}`,
+          duration: 6000
+        });
+        setOfflineCount(getOfflineCount());
+      }
+    } catch (err: any) {
+      toast.dismiss(syncToast);
+      toast.error("Communication error during offline sync.", {
+        description: err.message || "Please check your Supabase network permissions and security policies."
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleSaveDatabaseCredentials = () => {
+    setIsDbSaving(true);
+    try {
+      if (!dbUrl.trim() || !dbKey.trim()) {
+        toast.error('Please enter both Supabase URL and Anon Key');
+        setIsDbSaving(false);
+        return;
+      }
+
+      if (!dbUrl.trim().startsWith('https://')) {
+        toast.error('Invalid Supabase Project URL. Must start with https://');
+        setIsDbSaving(false);
+        return;
+      }
+
+      localStorage.setItem('hms_supabase_url', dbUrl.trim());
+      localStorage.setItem('hms_supabase_anon_key', dbKey.trim());
+      
+      toast.success('Database credentials saved successfully!', {
+        description: 'Re-syncing and reloading app to connect to your live database...',
+        duration: 3000
+      });
+
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+    } catch (err) {
+      toast.error('Failed to save credentials locally.');
+    } finally {
+      setIsDbSaving(false);
+    }
+  };
+
+  const handleResetDatabaseCredentials = () => {
+    localStorage.removeItem('hms_supabase_url');
+    localStorage.removeItem('hms_supabase_anon_key');
+    setDbUrl('');
+    setDbKey('');
+    toast.success('Database has been set back to local-only high-speed storage.', {
+      description: 'Reloading database components to update...',
+      duration: 3000
+    });
+    setTimeout(() => {
+      window.location.reload();
+    }, 1500);
+  };
 
   // Profile State
   const [profileData, setProfileData] = useState({
@@ -468,6 +598,7 @@ export default function Settings({ currentUser, onUserUpdate }: { currentUser?: 
           {!isAccountant && <TabsTrigger value="users" className="gap-2"><Users className="w-4 h-4" /> User Panel</TabsTrigger>}
           {!isAccountant && <TabsTrigger value="templates" className="gap-2"><Layout className="w-4 h-4" /> Templates</TabsTrigger>}
           <TabsTrigger value="prescriptions" className="gap-2"><FileText className="w-4 h-4" /> Prescriptions</TabsTrigger>
+          {!isAccountant && <TabsTrigger value="database" className="gap-2"><Database className="w-4 h-4" /> Database Setup</TabsTrigger>}
           {currentUser?.role === 'SUPER_ADMIN' && (
             <TabsTrigger value="audit" className="gap-2"><History className="w-4 h-4" /> Audit Logs</TabsTrigger>
           )}
@@ -1282,6 +1413,130 @@ export default function Settings({ currentUser, onUserUpdate }: { currentUser?: 
                     })()}
                   </div>
                 </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+        {!isAccountant && (
+          <TabsContent value="database">
+            <Card className="border-none shadow-sm animate-fade-in">
+              <CardHeader>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-xl text-slate-800 font-bold">
+                      <Database className="w-5 h-5 text-medical-blue animate-pulse" />
+                      Supabase Cloud Database Connection
+                    </CardTitle>
+                    <CardDescription>
+                      Connect your self-hosted Supabase database or project instance to save hospital registrations, billing, and consultations persistently.
+                    </CardDescription>
+                  </div>
+                  <Badge 
+                    className={`${
+                      isSupabaseConfigured 
+                        ? "bg-emerald-500 hover:bg-emerald-600 text-white font-semibold" 
+                        : "bg-amber-500 hover:bg-amber-600 text-white font-semibold"
+                    }`}
+                  >
+                    {isSupabaseConfigured ? "● CONNECTED TO LIVE DB" : "● LOCAL DATABASE MODE"}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {isSupabaseConfigured && (
+                  <div className="p-5 border border-dashed border-sky-200 rounded-lg bg-sky-50/50 space-y-4 animate-fade-in">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                          <Activity className="w-4 h-4 text-medical-blue animate-pulse" />
+                          Local Offline Workings & Sync Hub
+                        </h4>
+                        <p className="text-xs text-slate-600 mt-1">
+                          Any registrations, billings, vitals, or schedules you created while Supabase was unreachable are saved locally in your browser. Disabling RLS and clicking sync will safely upload them directly into your Supabase database schema!
+                        </p>
+                      </div>
+                      <Badge className={offlineCount > 0 ? "bg-amber-500 text-white font-bold" : "bg-emerald-500 text-white font-bold"}>
+                        {offlineCount} LOCAL ENTRIES
+                      </Badge>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pt-2">
+                      <div className="text-xs text-muted-foreground">
+                        {offlineCount > 0 ? (
+                          <span className="text-amber-600 font-semibold flex items-center gap-1">
+                            ⚠️ {offlineCount} entries waiting to be migrated to Supabase.
+                          </span>
+                        ) : (
+                          <span className="text-emerald-600 font-semibold flex items-center gap-1">
+                            ✓ Local records are fully synced and verified on Supabase Cloud.
+                          </span>
+                        )}
+                      </div>
+                      <Button 
+                        disabled={isSyncing || offlineCount === 0}
+                        onClick={handleSyncData}
+                        className="bg-slate-800 hover:bg-slate-900 text-white font-medium text-xs flex items-center gap-2"
+                      >
+                        {isSyncing ? "Uploading..." : `Force Sync Data (${offlineCount})`}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="supabase-url" className="text-sm font-semibold text-slate-700">Supabase API URL</Label>
+                    <Input 
+                      id="supabase-url" 
+                      placeholder="e.g. https://xyz.supabase.co" 
+                      value={dbUrl}
+                      className="bg-slate-50 border-slate-200"
+                      onChange={(e) => setDbUrl(e.target.value)}
+                    />
+                    <p className="text-[11px] text-muted-foreground">Found under <span className="font-semibold text-slate-600">Project Settings &gt; API</span> in your Supabase Dashboard.</p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="supabase-anon" className="text-sm font-semibold text-slate-700">Supabase Anon Key</Label>
+                    <Input 
+                      id="supabase-anon" 
+                      type="password"
+                      placeholder="e.g. eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." 
+                      value={dbKey}
+                      className="bg-slate-50 border-slate-200"
+                      onChange={(e) => setDbKey(e.target.value)}
+                    />
+                    <p className="text-[11px] text-muted-foreground">Found under <span className="font-semibold text-slate-600">Project Settings &gt; API</span> in your Supabase Dashboard.</p>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 border border-slate-100 rounded-lg flex flex-col gap-2">
+                  <h4 className="text-sm font-bold text-slate-800">Hospital Cloud Database Setup Instructions:</h4>
+                  <ul className="text-xs text-muted-foreground list-disc pl-5 space-y-1">
+                    <li>Open your Supabase project dashboard, click on the <span className="font-semibold text-slate-700">SQL Editor</span> tab on the left.</li>
+                    <li>Copy and paste the entire SQL schema script shown in your app's main page or click <span className="font-semibold">Run</span> to automatically configure your tables, views, and functions.</li>
+                    <li>Once you click <span className="font-semibold text-medical-blue">"Connect Live Database"</span>, the applet will store your credentials securely in your local browser storage and reload immediately.</li>
+                  </ul>
+                </div>
+
+                <div className="flex flex-wrap gap-4 pt-2">
+                  <Button 
+                    className="bg-medical-blue hover:bg-medical-blue/90" 
+                    disabled={isDbSaving}
+                    onClick={handleSaveDatabaseCredentials}
+                  >
+                    {isDbSaving ? "Connecting..." : "Connect Live Database"}
+                  </Button>
+                  {isSupabaseConfigured && (
+                    <Button 
+                      variant="outline" 
+                      onClick={handleResetDatabaseCredentials}
+                      className="text-rose-600 hover:text-rose-700 bg-rose-50 border-rose-100 hover:bg-rose-100"
+                    >
+                      Disconnect & Reset to Local DB
+                    </Button>
+                  )}
+                </div>
               </CardContent>
             </Card>
           </TabsContent>

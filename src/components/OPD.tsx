@@ -61,6 +61,41 @@ export default function OPD() {
   const [activeTab, setActiveTab] = useState<'queue' | 'appointments' | 'patients'>('queue');
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [isAppointmentOpen, setIsAppointmentOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<any>(null);
+  const [editingAppointment, setEditingAppointment] = useState<any>(null);
+
+  const handleOpenRegisterChange = (open: boolean) => {
+    setIsRegisterOpen(open);
+    if (!open) {
+      setEditingPatient(null);
+      setNewPatient({ 
+        name: '', 
+        phone: '', 
+        email: '',
+        age: '', 
+        gender: 'male',
+        address: '',
+        husbandName: '',
+        husbandPhone: '',
+        fatherName: '',
+        fatherPhone: '',
+        bloodGroup: '',
+        dob: '',
+        tpaId: '',
+        tpaValidity: '',
+        guardianName: '',
+        urgency: 'Routine'
+      });
+    }
+  };
+
+  const handleOpenAppointmentChange = (open: boolean) => {
+    setIsAppointmentOpen(open);
+    if (!open) {
+      setEditingAppointment(null);
+      setNewAppointment({ patientId: '', doctor: '', date: '', time: '', urgency: 'Routine' });
+    }
+  };
   const [isTokenSuccessOpen, setIsTokenSuccessOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedDoctorFilter, setSelectedDoctorFilter] = useState<string>('all');
@@ -141,12 +176,24 @@ export default function OPD() {
           .filter((apt: any) => !apt.type || apt.type === 'OPD')
           .map((apt: any) => ({
             ...apt,
+            patientId: apt.patient_id || apt.patientId,
             patientName: apt.patients?.name || 'Unknown',
-            patientMrn: apt.patients?.mrn || 'N/A'
+            patientMrn: apt.patients?.mrn || 'N/A',
+            appointment_date: apt.appointment_date || apt.date,
+            appointment_time: apt.appointment_time || apt.time,
           }));
         setAppointments(mappedApts);
       }
-      if (prescriptionsData) setSavedPrescriptions(prescriptionsData);
+      if (prescriptionsData) {
+        const mappedPrescriptions = prescriptionsData.map((rx: any) => ({
+          ...rx,
+          patientId: rx.patient_id || rx.patientId,
+          doctor: rx.doctor_name || rx.doctor,
+          date: rx.prescription_date ? rx.prescription_date.split('T')[0] : (rx.date || new Date().toISOString().split('T')[0]),
+          medicines: rx.medicines || rx.medications || []
+        }));
+        setSavedPrescriptions(mappedPrescriptions);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load data');
@@ -208,7 +255,10 @@ export default function OPD() {
   };
 
   const handleSavePrescription = async () => {
-    if (!selectedPatient) return;
+    if (!selectedPatient) {
+      toast.error('No patient selected. Cannot save prescription.');
+      return;
+    }
     
     const newPrescriptionData = {
       patient_id: selectedPatient.id,
@@ -222,7 +272,14 @@ export default function OPD() {
 
     const saved = await supabaseService.createPrescription(newPrescriptionData);
     if (saved) {
-      setSavedPrescriptions([saved, ...savedPrescriptions]);
+      const mappedSaved = {
+        ...saved,
+        patientId: saved.patient_id || saved.patientId,
+        doctor: saved.doctor_name || saved.doctor,
+        date: saved.prescription_date ? saved.prescription_date.split('T')[0] : (saved.date || new Date().toISOString().split('T')[0]),
+        medicines: saved.medicines || saved.medications || []
+      };
+      setSavedPrescriptions([mappedSaved, ...savedPrescriptions]);
       toast.success(`Prescription saved for ${selectedPatient.name}`);
       setIsPrescriptionOpen(false);
       // Reset form
@@ -433,11 +490,101 @@ export default function OPD() {
     }
   };
 
+  const startEditPatient = (patient: any) => {
+    setEditingPatient(patient);
+    setNewPatient({
+      name: patient.name || '',
+      phone: patient.phone || '',
+      email: patient.email || '',
+      age: patient.age ? String(patient.age) : '',
+      gender: patient.gender || 'male',
+      address: patient.address || '',
+      husbandName: patient.husband_name || patient.husbandName || '',
+      husbandPhone: patient.husband_phone || patient.husbandPhone || '',
+      fatherName: patient.father_name || patient.fatherName || '',
+      fatherPhone: patient.father_phone || patient.fatherPhone || '',
+      bloodGroup: patient.blood_group || patient.bloodGroup || '',
+      dob: patient.dob || '',
+      tpaId: patient.tpa_id || patient.tpaId || '',
+      tpaValidity: patient.tpa_validity || patient.tpaValidity || '',
+      guardianName: patient.guardian_name || patient.guardianName || '',
+      urgency: patient.urgency || 'Routine'
+    });
+    setIsRegisterOpen(true);
+  };
+
+  const startEditAppointment = (apt: any) => {
+    setEditingAppointment(apt);
+    setNewAppointment({
+      patientId: apt.patient_id || apt.patientId || '',
+      doctor: apt.doctor || 'Dr. Rajesh Sharma',
+      date: apt.appointment_date ? apt.appointment_date.split('T')[0] : (apt.date || ''),
+      time: apt.appointment_time || apt.time || '',
+      urgency: apt.urgency || 'Routine'
+    });
+    setIsAppointmentOpen(true);
+  };
+
   const handleRegistration = async () => {
     if (!newPatient.name || !newPatient.phone) {
       toast.error('Please fill in required fields');
       return;
     }
+
+    if (editingPatient) {
+      const updatedData = {
+        name: newPatient.name,
+        phone: newPatient.phone,
+        email: newPatient.email,
+        dob: newPatient.dob ? newPatient.dob : null,
+        age: newPatient.age ? Number(newPatient.age) : null,
+        gender: newPatient.gender,
+        blood_group: newPatient.bloodGroup,
+        address: newPatient.address,
+        guardian_name: newPatient.guardianName,
+        father_name: newPatient.fatherName,
+        father_phone: newPatient.fatherPhone,
+        husband_name: newPatient.husbandName,
+        husband_phone: newPatient.husbandPhone,
+        tpa_id: newPatient.tpaId,
+        tpa_validity: newPatient.tpaValidity ? newPatient.tpaValidity : null,
+        urgency: newPatient.urgency
+      };
+
+      const result = await supabaseService.updatePatient(editingPatient.id, updatedData);
+      if (result) {
+        const updatedPatientsList = patients.map(p => p.id === editingPatient.id ? { ...p, ...result } : p);
+        setPatients(updatedPatientsList);
+        storage.set(STORAGE_KEYS.PATIENTS, updatedPatientsList);
+        toast.success('Patient information updated successfully');
+        setIsRegisterOpen(false);
+        setEditingPatient(null);
+        // Reset form
+        setNewPatient({ 
+          name: '', 
+          phone: '', 
+          email: '',
+          age: '', 
+          gender: 'male',
+          address: '',
+          husbandName: '',
+          husbandPhone: '',
+          fatherName: '',
+          fatherPhone: '',
+          bloodGroup: '',
+          dob: '',
+          tpaId: '',
+          tpaValidity: '',
+          guardianName: '',
+          urgency: 'Routine'
+        });
+        window.dispatchEvent(new Event('storage'));
+      } else {
+        toast.error('Failed to update patient details');
+      }
+      return;
+    }
+
     const tokenNumber = `#${Math.floor(Math.random() * 900) + 100}`;
     const mrn = `MRN${Math.floor(Math.random() * 90000) + 10000}`;
     const regFee = 200;
@@ -529,6 +676,40 @@ export default function OPD() {
       toast.error('Please select patient and doctor');
       return;
     }
+
+    if (editingAppointment) {
+      const updatedData = {
+        patient_id: newAppointment.patientId,
+        appointment_date: newAppointment.date || new Date().toISOString().split('T')[0],
+        appointment_time: newAppointment.time || '10:00 AM',
+        urgency: newAppointment.urgency
+      };
+
+      const result = await supabaseService.updateAppointment(editingAppointment.id, updatedData);
+      if (result) {
+        const patient = patients.find(p => p.id === newAppointment.patientId);
+        const updatedApt = {
+          ...result,
+          patientId: result.patient_id || result.patientId,
+          patientName: patient?.name || 'Unknown',
+          patientMrn: patient?.mrn || 'N/A',
+          appointment_date: result.appointment_date || result.date,
+          appointment_time: result.appointment_time || result.time,
+        };
+        const updatedList = appointments.map(a => a.id === editingAppointment.id ? updatedApt : a);
+        setAppointments(updatedList);
+        storage.set(STORAGE_KEYS.APPOINTMENTS, updatedList);
+        toast.success('Appointment updated successfully');
+        setIsAppointmentOpen(false);
+        setEditingAppointment(null);
+        setNewAppointment({ patientId: '', doctor: '', date: '', time: '', urgency: 'Routine' });
+        window.dispatchEvent(new Event('storage'));
+      } else {
+        toast.error('Failed to update appointment');
+      }
+      return;
+    }
+
     const patient = patients.find(p => p.id === newAppointment.patientId);
     const tokenNumber = `APT-${Math.floor(Math.random() * 900) + 100}`;
     const appointmentDate = newAppointment.date || new Date().toISOString().split('T')[0];
@@ -746,7 +927,7 @@ export default function OPD() {
             </Button>
           )}
           {!isAccountant && (
-            <Dialog open={isAppointmentOpen} onOpenChange={setIsAppointmentOpen}>
+            <Dialog open={isAppointmentOpen} onOpenChange={handleOpenAppointmentChange}>
               <DialogTrigger asChild>
                 <Button variant="outline" className="gap-2 border-medical-blue text-medical-blue hover:bg-medical-blue hover:text-white">
                   <CalendarIcon className="w-4 h-4" />
@@ -755,7 +936,7 @@ export default function OPD() {
               </DialogTrigger>
               <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
-                  <DialogTitle>Book New Appointment</DialogTitle>
+                  <DialogTitle>{editingAppointment ? 'Edit Appointment' : 'Book New Appointment'}</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
                   <div className="space-y-2 relative">
@@ -929,7 +1110,7 @@ export default function OPD() {
           )}
 
           {!isAccountant && (
-            <Dialog open={isRegisterOpen} onOpenChange={setIsRegisterOpen}>
+            <Dialog open={isRegisterOpen} onOpenChange={handleOpenRegisterChange}>
               <DialogTrigger asChild>
                 <Button className="bg-medical-blue gap-2">
                   <UserPlus className="w-4 h-4" />
@@ -938,7 +1119,7 @@ export default function OPD() {
               </DialogTrigger>
               <DialogContent className="sm:max-w-[700px]">
                 <DialogHeader>
-                  <DialogTitle>Patient Registration</DialogTitle>
+                  <DialogTitle>{editingPatient ? 'Edit Patient Information' : 'Patient Registration'}</DialogTitle>
                 </DialogHeader>
                 <div className="max-h-[80vh] overflow-y-auto custom-scrollbar pr-4">
                   <div className="grid grid-cols-2 gap-4 py-4">
@@ -1117,7 +1298,7 @@ export default function OPD() {
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setIsRegisterOpen(false)}>Cancel</Button>
-                  <Button className="bg-medical-blue" onClick={handleRegistration}>Register & Generate Token</Button>
+                  <Button className="bg-medical-blue" onClick={handleRegistration}>{editingPatient ? 'Save Changes' : 'Register & Generate Token'}</Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
@@ -1268,7 +1449,7 @@ export default function OPD() {
                             </Button>
                           )}
                           {!isAccountant && (
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-medical-blue" onClick={() => toast.info('Editing patient...')}>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-medical-blue" onClick={() => startEditPatient(patient)}>
                               <Edit className="w-4 h-4" />
                             </Button>
                           )}
@@ -1373,7 +1554,7 @@ export default function OPD() {
                             <Printer className="w-4 h-4" />
                           </Button>
                           {!isAccountant && (
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-medical-blue" onClick={() => toast.info('Editing appointment...')}>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-medical-blue" onClick={() => startEditAppointment(apt)}>
                               <Edit className="w-4 h-4" />
                             </Button>
                           )}
