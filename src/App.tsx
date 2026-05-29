@@ -76,7 +76,7 @@ const navItems = [
   { name: 'Lab & Radiology', icon: FlaskConical, path: '/lab', roles: ['SUPER_ADMIN', 'LAB_STAFF', 'DOCTOR'] },
   { name: 'Pharmacy', icon: Pill, path: '/pharmacy', roles: ['SUPER_ADMIN', 'PHARMACIST', 'DOCTOR'] },
   { name: 'Maternity', icon: Baby, path: '/maternity', roles: ['SUPER_ADMIN', 'DOCTOR', 'NURSE'] },
-  { name: 'Staff Management', icon: Users, path: '/staff', roles: ['SUPER_ADMIN'] },
+  { name: 'Staff Management', icon: Users, path: '/staff', roles: ['SUPER_ADMIN', 'DOCTOR', 'RECEPTIONIST', 'RECEPTION', 'NURSE', 'LAB_STAFF', 'PHARMACIST', 'ACCOUNTANT', 'SURGEON'] },
   { name: 'Expenses', icon: FileText, path: '/expenses', roles: ['SUPER_ADMIN', 'ACCOUNTANT'] },
 ];
 

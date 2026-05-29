@@ -402,6 +402,12 @@ View full details at: ${shareUrl}
     return total - paid;
   };
 
+  const patientAppointments = useMemo(() => appointments.filter(a => a.patient_id === selectedPatient?.id), [appointments, selectedPatient]);
+  const patientBills = useMemo(() => billing.filter(b => b.patient_id === selectedPatient?.id), [billing, selectedPatient]);
+  const patientClaims = useMemo(() => insuranceClaims.filter(c => c.patient_id === selectedPatient?.id), [insuranceClaims, selectedPatient]);
+  const currentBed = useMemo(() => beds.find(b => b.patient_id === selectedPatient?.id), [beds, selectedPatient]);
+  const dues = useMemo(() => selectedPatient ? calculateDues(selectedPatient.id) : 0, [selectedPatient, billing]);
+
   if (isLoading) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-50">
@@ -477,12 +483,6 @@ View full details at: ${shareUrl}
       </div>
     );
   }
-
-  const patientAppointments = useMemo(() => appointments.filter(a => a.patient_id === selectedPatient?.id), [appointments, selectedPatient]);
-  const patientBills = useMemo(() => billing.filter(b => b.patient_id === selectedPatient?.id), [billing, selectedPatient]);
-  const patientClaims = useMemo(() => insuranceClaims.filter(c => c.patient_id === selectedPatient?.id), [insuranceClaims, selectedPatient]);
-  const currentBed = useMemo(() => beds.find(b => b.patient_id === selectedPatient?.id), [beds, selectedPatient]);
-  const dues = useMemo(() => selectedPatient ? calculateDues(selectedPatient.id) : 0, [selectedPatient, billing]);
 
   return (
     <div className="p-6 space-y-6 bg-slate-50/50 min-h-screen">

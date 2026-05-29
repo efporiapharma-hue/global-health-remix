@@ -17,6 +17,341 @@ import {
   MOCK_USERS
 } from '../mockData';
 
+// --- SCHEMA NORMALIZATION HELPERS ---
+function cleanAppointmentForPostgres(apt: any) {
+  if (!apt) return apt;
+  const cleaned = { ...apt };
+  
+  // Encode 'type' inside 'urgency' if type is specified and not the standard OPD/General
+  if (cleaned.type && cleaned.type !== 'OPD') {
+    cleaned.urgency = `${cleaned.urgency || 'Routine'} [${cleaned.type}]`;
+  }
+  
+  // list of actual columns in supabase_schema.sql
+  const validColumns = [
+    'id', 'patient_id', 'doctor_id', 'appointment_date', 'appointment_time',
+    'token_number', 'urgency', 'status', 'fee', 'payment_status', 'created_at', 'updated_at'
+  ];
+  const result: any = {};
+  for (const col of validColumns) {
+    if (col in cleaned) {
+      result[col] = cleaned[col];
+    }
+  }
+  return result;
+}
+
+function mapAppointmentFromPostgres(apt: any) {
+  if (!apt) return apt;
+  const mapped = { ...apt };
+  let type = 'OPD';
+  let urgency = apt.urgency || 'Routine';
+  if (urgency.includes('[') && urgency.includes(']')) {
+    const parts = urgency.split('[');
+    urgency = parts[0].trim();
+    type = parts[1].replace(']', '').trim();
+  }
+  mapped.type = type;
+  mapped.urgency = urgency;
+  return mapped;
+}
+
+function cleanInvoiceForPostgres(inv: any) {
+  if (!inv) return inv;
+  const cleaned = { ...inv };
+  
+  // auto generate unique invoice number if missing
+  if (!cleaned.invoice_number) {
+    cleaned.invoice_number = `INV-POS-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  }
+  
+  // map legacy / fallback names to supabase schema names
+  if ('status' in cleaned && !('payment_status' in cleaned)) {
+    cleaned.payment_status = cleaned.status;
+  }
+  if ('created_by' in cleaned && !('issued_by' in cleaned)) {
+    cleaned.issued_by = cleaned.created_by;
+  }
+  
+  // calculate payable_amount if missing
+  if (!('payable_amount' in cleaned)) {
+    const total = Number(cleaned.total_amount) || 0;
+    const discount = Number(cleaned.discount_amount) || 0;
+    const tax = Number(cleaned.tax_amount) || 0;
+    cleaned.payable_amount = (total - discount) + tax;
+  }
+  
+  // list of actual columns in supabase_schema.sql
+  const validColumns = [
+    'id', 'patient_id', 'invoice_number', 'total_amount', 'discount_amount',
+    'tax_amount', 'payable_amount', 'paid_amount', 'payment_status', 'payment_method',
+    'tpa_approval_status', 'issued_by', 'created_at', 'updated_at'
+  ];
+  
+  const result: any = {};
+  for (const col of validColumns) {
+    if (col in cleaned) {
+      result[col] = cleaned[col];
+    }
+  }
+  return result;
+}
+
+function mapInvoiceFromPostgres(inv: any) {
+  if (!inv) return inv;
+  return {
+    ...inv,
+    status: inv.payment_status || 'Unpaid',
+    created_by: inv.issued_by
+  };
+}
+
+function cleanInvoiceItemForPostgres(item: any) {
+  if (!item) return item;
+  const cleaned = { ...item };
+  
+  // map legacy / fallback names to supabase schema names
+  if ('item_name' in cleaned && !('description' in cleaned)) {
+    cleaned.description = cleaned.item_name;
+  }
+  if ('item_type' in cleaned && !('category' in cleaned)) {
+    cleaned.category = cleaned.item_type;
+  }
+  
+  // list of actual columns in supabase_schema.sql
+  const validColumns = [
+    'id', 'invoice_id', 'description', 'quantity', 'unit_price', 'total_price',
+    'tax_percentage', 'category', 'source_type', 'source_id'
+  ];
+  
+  const result: any = {};
+  for (const col of validColumns) {
+    if (col in cleaned) {
+      result[col] = cleaned[col];
+    }
+  }
+  return result;
+}
+
+function mapInvoiceItemFromPostgres(item: any) {
+  if (!item) return item;
+  return {
+    ...item,
+    item_name: item.description,
+    item_type: item.category
+  };
+}
+
+function cleanPharmacyItemForPostgres(item: any) {
+  if (!item) return item;
+  const cleaned = { ...item };
+
+  if ('stock' in cleaned && !('stock_quantity' in cleaned)) {
+    cleaned.stock_quantity = cleaned.stock;
+  }
+  if ('stock_quantity' in cleaned && !('stock' in cleaned)) {
+    cleaned.stock = cleaned.stock_quantity;
+  }
+
+  if ('selling_price' in cleaned && !('sale_price' in cleaned)) {
+    cleaned.sale_price = cleaned.selling_price;
+  }
+  if ('sale_price' in cleaned && !('selling_price' in cleaned)) {
+    cleaned.selling_price = cleaned.sale_price;
+  }
+
+  if ('min_stock_level' in cleaned && !('reorder_level' in cleaned)) {
+    cleaned.reorder_level = cleaned.min_stock_level;
+  }
+  if ('reorder_level' in cleaned && !('min_stock_level' in cleaned)) {
+    cleaned.min_stock_level = cleaned.reorder_level;
+  }
+
+  return cleaned;
+}
+
+function mapPharmacyItemFromPostgres(item: any) {
+  if (!item) return item;
+  return {
+    ...item,
+    stock: item.stock !== undefined ? item.stock : (item.stock_quantity !== undefined ? item.stock_quantity : 0),
+    stock_quantity: item.stock_quantity !== undefined ? item.stock_quantity : (item.stock !== undefined ? item.stock : 0),
+    selling_price: item.selling_price !== undefined ? item.selling_price : (item.sale_price !== undefined ? item.sale_price : 0),
+    sale_price: item.sale_price !== undefined ? item.sale_price : (item.selling_price !== undefined ? item.selling_price : 0),
+    min_stock_level: item.min_stock_level !== undefined ? item.min_stock_level : (item.reorder_level !== undefined ? item.reorder_level : 10),
+    reorder_level: item.reorder_level !== undefined ? item.reorder_level : (item.min_stock_level !== undefined ? item.min_stock_level : 10)
+  };
+}
+
+function mapOTScheduleFromPostgres(row: any) {
+  if (!row) return row;
+  return {
+    ...row,
+    patientId: row.patientId || row.patient_id,
+    theatreId: row.theatreId || row.room_id || row.ot_rooms_id,
+    surgeonId: row.surgeonId || row.surgeon_id,
+    operationName: row.operationName || row.operation_name || '',
+    date: row.date || row.scheduled_date || row.surgery_date,
+    startTime: row.startTime || row.scheduled_time || row.surgery_time,
+    status: row.status || 'Scheduled',
+    notes: row.notes || '',
+    documents: row.documents || []
+  };
+}
+
+function cleanOTScheduleForPostgres(sch: any) {
+  if (!sch) return sch;
+  return {
+    patient_id: sch.patientId || sch.patient_id,
+    room_id: sch.theatreId || sch.room_id || sch.ot_rooms_id || null,
+    surgeon_id: sch.surgeonId || sch.surgeon_id || null,
+    operation_name: sch.operationName || sch.operation_name,
+    scheduled_date: sch.date || sch.scheduled_date || null,
+    scheduled_time: sch.time || sch.startTime || sch.scheduled_time || null,
+    status: sch.status || 'Scheduled',
+    notes: sch.notes || null
+  };
+}
+
+function cleanVitalsForPostgres(vitals: any) {
+  if (!vitals) return vitals;
+  const cleaned = { ...vitals };
+  
+  if ('patientId' in cleaned && !('patient_id' in cleaned)) {
+    cleaned.patient_id = cleaned.patientId;
+  }
+  
+  if ('bp' in cleaned && !('blood_pressure' in cleaned)) {
+    cleaned.blood_pressure = cleaned.bp;
+  }
+  if ('blood_pressure' in cleaned && !('bp' in cleaned)) {
+    cleaned.bp = cleaned.blood_pressure;
+  }
+  
+  let tempVal = cleaned.temp !== undefined ? cleaned.temp : cleaned.temperature;
+  if (tempVal !== undefined && tempVal !== '') {
+    if (typeof tempVal === 'string') {
+      const numericMatch = tempVal.match(/[\d.]+/);
+      if (numericMatch) {
+        tempVal = parseFloat(numericMatch[0]);
+      } else {
+        tempVal = parseFloat(tempVal) || null;
+      }
+    }
+    cleaned.temperature = tempVal;
+    cleaned.temp = tempVal;
+  }
+
+  if ('pulse' in cleaned && cleaned.pulse !== '' && cleaned.pulse !== null && cleaned.pulse !== undefined) {
+    cleaned.pulse = parseInt(cleaned.pulse, 10);
+  }
+
+  let rrVal = cleaned.respiration !== undefined ? cleaned.respiration : cleaned.rr;
+  if (rrVal !== undefined && rrVal !== '' && rrVal !== null) {
+    rrVal = parseInt(rrVal, 10);
+    cleaned.respiration = rrVal;
+    cleaned.rr = rrVal;
+  }
+
+  if ('spo2' in cleaned && cleaned.spo2 !== '' && cleaned.spo2 !== null && cleaned.spo2 !== undefined) {
+    cleaned.spo2 = parseInt(cleaned.spo2, 10);
+  }
+  if ('weight' in cleaned && cleaned.weight !== '' && cleaned.weight !== null && cleaned.weight !== undefined) {
+    cleaned.weight = parseFloat(cleaned.weight);
+  }
+
+  if ('timestamp' in cleaned && !('recorded_at' in cleaned)) {
+    cleaned.recorded_at = cleaned.timestamp;
+  }
+  if ('lastUpdated' in cleaned && !('recorded_at' in cleaned)) {
+    cleaned.recorded_at = cleaned.lastUpdated;
+  }
+
+  const validColumns = [
+    'id', 'patient_id', 'recorded_by', 'temperature', 'temp', 'blood_pressure', 'bp',
+    'pulse', 'respiration', 'rr', 'spo2', 'weight', 'recorded_at', 'updated_at'
+  ];
+
+  const result: any = {};
+  for (const col of validColumns) {
+    if (col in cleaned && cleaned[col] !== undefined) {
+      result[col] = cleaned[col];
+    }
+  }
+  return result;
+}
+
+function mapVitalsFromPostgres(vitals: any) {
+  if (!vitals) return vitals;
+  let tempString = '';
+  const tempVal = vitals.temperature !== null && vitals.temperature !== undefined 
+    ? vitals.temperature 
+    : vitals.temp;
+  if (tempVal !== null && tempVal !== undefined) {
+    tempString = String(tempVal);
+  }
+  
+  const mapped = {
+    ...vitals,
+    patientId: vitals.patient_id,
+    bp: vitals.blood_pressure || vitals.bp || '',
+    pulse: vitals.pulse || 0,
+    temp: tempString,
+    spo2: vitals.spo2 || 0,
+    rr: vitals.respiration !== null && vitals.respiration !== undefined ? vitals.respiration : (vitals.rr || 0),
+    respiration: vitals.respiration !== null && vitals.respiration !== undefined ? vitals.respiration : (vitals.rr || 0),
+    lastUpdated: vitals.recorded_at,
+    timestamp: vitals.recorded_at
+  };
+  return mapped;
+}
+
+async function selfHealingQuery(action: 'insert' | 'update', table: string, payload: any, id?: string) {
+  let attempt = 0;
+  const maxAttempts = 10;
+  let currentPayload = Array.isArray(payload) ? { ...payload[0] } : { ...payload };
+
+  while (attempt < maxAttempts) {
+    try {
+      if (action === 'insert') {
+        const { data, error } = await supabase
+          .from(table)
+          .insert([currentPayload])
+          .select();
+        
+        if (error) throw error;
+        return data;
+      } else {
+        const { data, error } = await supabase
+          .from(table)
+          .update(currentPayload)
+          .eq('id', id!)
+          .select();
+        
+        if (error) throw error;
+        return data;
+      }
+    } catch (error: any) {
+      console.warn(`Self-healing query attempt ${attempt + 1} failed for ${table}:`, error.message);
+      
+      const errMsg = error.message || '';
+      const match = errMsg.match(/Could not find the '([^']+)'/) ||
+                    errMsg.match(/column '([^']+)'/) ||
+                    errMsg.match(/column "([^"]+)"/);
+      
+      if (match && match[1]) {
+        const missingKey = match[1];
+        console.log(`Detected missing database column '${missingKey}' inside ${table} table. Stripping it and retrying query...`);
+        delete currentPayload[missingKey];
+        attempt++;
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new Error(`Self-healing query exceeded max retries of ${maxAttempts} for ${table} table.`);
+}
+
 const rawSupabaseService = {
   // Patients
   getPatients: async () => {
@@ -89,7 +424,7 @@ const rawSupabaseService = {
         .order('appointment_date', { ascending: true });
       
       if (error) throw error;
-      return data;
+      return (data || []).map(mapAppointmentFromPostgres);
     } catch (error: any) {
       console.error('Error fetching appointments:', error.message);
       return null;
@@ -98,13 +433,14 @@ const rawSupabaseService = {
 
   createAppointment: async (appointment: any) => {
     try {
+      const dbApt = cleanAppointmentForPostgres(appointment);
       const { data, error } = await supabase
         .from('appointments')
-        .insert([appointment])
+        .insert([dbApt])
         .select();
       
       if (error) throw error;
-      return data[0];
+      return mapAppointmentFromPostgres(data[0]);
     } catch (error: any) {
       console.error('Error creating appointment:', error.message);
       return null;
@@ -113,14 +449,15 @@ const rawSupabaseService = {
 
   updateAppointment: async (id: string, updates: any) => {
     try {
+      const dbUpdates = cleanAppointmentForPostgres(updates);
       const { data, error } = await supabase
         .from('appointments')
-        .update(updates)
+        .update(dbUpdates)
         .eq('id', id)
         .select();
       
       if (error) throw error;
-      return data[0];
+      return mapAppointmentFromPostgres(data[0]);
     } catch (error: any) {
       console.error('Error updating appointment:', error.message);
       return null;
@@ -184,6 +521,15 @@ const rawSupabaseService = {
         .order('created_at', { ascending: false });
       
       if (error) throw error;
+      if (data) {
+        return data.map((inv: any) => {
+          const mappedInv = mapInvoiceFromPostgres(inv);
+          if (inv.invoice_items) {
+            mappedInv.invoice_items = inv.invoice_items.map(mapInvoiceItemFromPostgres);
+          }
+          return mappedInv;
+        });
+      }
       return data;
     } catch (error: any) {
       console.error('Error fetching invoices:', error.message);
@@ -193,15 +539,19 @@ const rawSupabaseService = {
 
   createInvoice: async (invoice: any, items: any[]) => {
     try {
+      const dbInv = cleanInvoiceForPostgres(invoice);
       const { data: invData, error: invError } = await supabase
         .from('invoices')
-        .insert([invoice])
+        .insert([dbInv])
         .select();
       
       if (invError) throw invError;
       
       const invoiceId = invData[0].id;
-      const itemsToInsert = items.map(item => ({ ...item, invoice_id: invoiceId }));
+      const itemsToInsert = items.map(item => {
+        const dbItem = cleanInvoiceItemForPostgres(item);
+        return { ...dbItem, invoice_id: invoiceId };
+      });
       
       const { error: itemsError } = await supabase
         .from('invoice_items')
@@ -209,7 +559,15 @@ const rawSupabaseService = {
       
       if (itemsError) throw itemsError;
       
-      return invData[0];
+      const syncedInv = mapInvoiceFromPostgres(invData[0]);
+      // Fetch items back with their generated IDs and back-map to sync properly with frontend cache
+      const { data: syncedItems } = await supabase
+        .from('invoice_items')
+        .select('*')
+        .eq('invoice_id', invoiceId);
+      
+      syncedInv.invoice_items = (syncedItems || []).map(mapInvoiceItemFromPostgres);
+      return syncedInv;
     } catch (error: any) {
       console.error('Error creating invoice:', error.message);
       return null;
@@ -397,12 +755,29 @@ const rawSupabaseService = {
   getStaff: async () => {
     try {
       const { data, error } = await supabase
-        .from('profiles')
+        .from('staff')
         .select('*')
         .order('name', { ascending: true });
       
-      if (error) throw error;
-      return data;
+      if (error) {
+        if (error.code === 'PGRST116' || error.message?.toLowerCase().includes('does not exist')) {
+          // Fallback to profiles table
+          const { data: pData, error: pError } = await supabase
+            .from('profiles')
+            .select('*')
+            .order('name', { ascending: true });
+          if (pError) throw pError;
+          return (pData || []).map((p: any) => ({
+            ...p,
+            avatar: p.avatar_url || p.avatar
+          }));
+        }
+        throw error;
+      }
+      return (data || []).map((p: any) => ({
+        ...p,
+        avatar: p.avatar_url || p.avatar
+      }));
     } catch (error: any) {
       console.error('Error fetching staff:', error.message);
       return null;
@@ -411,47 +786,139 @@ const rawSupabaseService = {
 
   createStaff: async (profile: any) => {
     try {
+      const dbProfile = { ...profile };
+      if ('avatar' in dbProfile) {
+        dbProfile.avatar_url = dbProfile.avatar;
+        delete dbProfile.avatar;
+      }
+      
+      // Normalize roles to prevent CHECK constraint violations on profiles table
+      if (dbProfile.role) {
+        const r = dbProfile.role.toUpperCase().trim();
+        if (r === 'RECEPTION' || r === 'RECEPTION_STAFF') {
+          dbProfile.role = 'RECEPTIONIST';
+        } else if (r === 'LAB_STAFF' || r === 'LAB_STAFF_MEMBER') {
+          dbProfile.role = 'LAB_TECHNICIAN';
+        } else {
+          dbProfile.role = r;
+        }
+      }
+      
+      if (!dbProfile.id) {
+        dbProfile.id = typeof crypto !== 'undefined' && crypto.randomUUID 
+          ? crypto.randomUUID() 
+          : '3f6c8d1a-4b9e-4e8c-8d1a-' + Math.random().toString(36).substring(2, 14).padEnd(12, '0');
+      }
+
       const { data, error } = await supabase
-        .from('profiles')
-        .insert([profile])
+        .from('staff')
+        .insert([dbProfile])
         .select();
       
-      if (error) throw error;
-      return data[0];
+      if (error) {
+        if (error.message?.toLowerCase().includes('does not exist')) {
+          // Fallback to inserting into profiles
+          const { data: pData, error: pError } = await supabase
+            .from('profiles')
+            .insert([dbProfile])
+            .select();
+          if (pError) throw pError;
+          const result = pData[0];
+          return {
+            ...result,
+            avatar: result.avatar_url || result.avatar
+          };
+        }
+        throw error;
+      }
+      const result = data[0];
+      return {
+        ...result,
+        avatar: result.avatar_url || result.avatar
+      };
     } catch (error: any) {
       console.error('Error creating staff:', error.message);
-      return null;
+      throw error;
     }
   },
 
   updateStaff: async (id: string, updates: any) => {
     try {
+      const dbUpdates = { ...updates };
+      if ('avatar' in dbUpdates) {
+        dbUpdates.avatar_url = dbUpdates.avatar;
+        delete dbUpdates.avatar;
+      }
+      
+      // Normalize roles to prevent CHECK constraint violations on profiles table
+      if (dbUpdates.role) {
+        const r = dbUpdates.role.toUpperCase().trim();
+        if (r === 'RECEPTION' || r === 'RECEPTION_STAFF') {
+          dbUpdates.role = 'RECEPTIONIST';
+        } else if (r === 'LAB_STAFF' || r === 'LAB_STAFF_MEMBER') {
+          dbUpdates.role = 'LAB_TECHNICIAN';
+        } else {
+          dbUpdates.role = r;
+        }
+      }
+
       const { data, error } = await supabase
-        .from('profiles')
-        .update(updates)
+        .from('staff')
+        .update(dbUpdates)
         .eq('id', id)
         .select();
       
-      if (error) throw error;
-      return data[0];
+      if (error) {
+        if (error.message?.toLowerCase().includes('does not exist')) {
+          // Fallback to updating profiles
+          const { data: pData, error: pError } = await supabase
+            .from('profiles')
+            .update(dbUpdates)
+            .eq('id', id)
+            .select();
+          if (pError) throw pError;
+          const result = pData[0];
+          return {
+            ...result,
+            avatar: result.avatar_url || result.avatar
+          };
+        }
+        throw error;
+      }
+      const result = data[0];
+      return {
+        ...result,
+        avatar: result.avatar_url || result.avatar
+      };
     } catch (error: any) {
       console.error('Error updating staff:', error.message);
-      return null;
+      throw error;
     }
   },
 
   deleteStaff: async (id: string) => {
     try {
       const { error } = await supabase
-        .from('profiles')
+        .from('staff')
         .delete()
         .eq('id', id);
       
-      if (error) throw error;
+      if (error) {
+        if (error.message?.toLowerCase().includes('does not exist')) {
+          // Fallback to deleting from profiles
+          const { error: pError } = await supabase
+            .from('profiles')
+            .delete()
+            .eq('id', id);
+          if (pError) throw pError;
+          return true;
+        }
+        throw error;
+      }
       return true;
     } catch (error: any) {
       console.error('Error deleting staff:', error.message);
-      return false;
+      throw error;
     }
   },
 
@@ -570,26 +1037,28 @@ const rawSupabaseService = {
     try {
       const { data, error } = await supabase
         .from('ot_schedules')
-        .select('*, patients(name, mrn), profiles:surgeon_id(name), ot_rooms:room_id(name)')
-        .order('operation_date', { ascending: true });
+        .select('*')
+        .order('scheduled_date', { ascending: true });
       
       if (error) throw error;
-      return data;
+      return (data || []).map(mapOTScheduleFromPostgres);
     } catch (error: any) {
       console.warn('Handling local fallback for OT schedules:', error.message);
-      return storage.get('hms_ot_schedules', []);
+      const fallbackList = storage.get('hms_ot_schedules', []);
+      return fallbackList.map(mapOTScheduleFromPostgres);
     }
   },
 
   createOTSchedule: async (schedule: any) => {
     try {
+      const dbSchedule = cleanOTScheduleForPostgres(schedule);
       const { data, error } = await supabase
         .from('ot_schedules')
-        .insert([schedule])
+        .insert([dbSchedule])
         .select();
       
       if (error) throw error;
-      return data[0];
+      return mapOTScheduleFromPostgres(data[0]);
     } catch (error: any) {
       console.warn('Handling local fallback for create OT schedule:', error.message);
       const list = storage.get('hms_ot_schedules', []);
@@ -600,7 +1069,7 @@ const rawSupabaseService = {
       };
       list.push(newSchedule);
       storage.set('hms_ot_schedules', list);
-      return newSchedule;
+      return mapOTScheduleFromPostgres(newSchedule);
     }
   },
 
@@ -985,7 +1454,7 @@ const rawSupabaseService = {
       const { data, error } = await query.order('recorded_at', { ascending: false });
       
       if (error) throw error;
-      return data;
+      return (data || []).map(mapVitalsFromPostgres);
     } catch (error: any) {
       console.error('Error fetching vitals:', error.message);
       return null;
@@ -994,13 +1463,9 @@ const rawSupabaseService = {
 
   updateVitals: async (vitals: any) => {
     try {
-      const { data, error } = await supabase
-        .from('patient_vitals')
-        .insert([vitals])
-        .select();
-      
-      if (error) throw error;
-      return data[0];
+      const dbVitals = cleanVitalsForPostgres(vitals);
+      const data = await selfHealingQuery('insert', 'patient_vitals', dbVitals);
+      return mapVitalsFromPostgres(data[0]);
     } catch (error: any) {
       console.error('Error updating vitals:', error.message);
       return null;
@@ -1063,7 +1528,7 @@ const rawSupabaseService = {
         .order('name', { ascending: true });
       
       if (error) throw error;
-      return data;
+      return (data || []).map(mapPharmacyItemFromPostgres);
     } catch (error: any) {
       console.error('Error fetching pharmacy items:', error.message);
       return null;
@@ -1072,13 +1537,9 @@ const rawSupabaseService = {
 
   createPharmacyItem: async (item: any) => {
     try {
-      const { data, error } = await supabase
-        .from('pharmacy_items')
-        .insert([item])
-        .select();
-      
-      if (error) throw error;
-      return data[0];
+      const dbItem = cleanPharmacyItemForPostgres(item);
+      const data = await selfHealingQuery('insert', 'pharmacy_items', dbItem);
+      return mapPharmacyItemFromPostgres(data[0]);
     } catch (error: any) {
       console.error('Error creating pharmacy item:', error.message);
       return null;
@@ -1087,14 +1548,9 @@ const rawSupabaseService = {
 
   updatePharmacyItem: async (id: string, updates: any) => {
     try {
-      const { data, error } = await supabase
-        .from('pharmacy_items')
-        .update(updates)
-        .eq('id', id)
-        .select();
-      
-      if (error) throw error;
-      return data[0];
+      const dbUpdates = cleanPharmacyItemForPostgres(updates);
+      const data = await selfHealingQuery('update', 'pharmacy_items', dbUpdates, id);
+      return mapPharmacyItemFromPostgres(data[0]);
     } catch (error: any) {
       console.error('Error updating pharmacy item:', error.message);
       return null;
@@ -1185,12 +1641,17 @@ function updateLocalCacheOnMutation(key: string, args: any[], result: any) {
   const k = key.toLowerCase();
   
   try {
-    if (key.startsWith('create') || key.startsWith('add') || key.startsWith('record')) {
+    if (key.startsWith('create') || key.startsWith('add') || key.startsWith('record') || key === 'updateVitals') {
       if (k.includes('patient')) {
         const list = storage.get(STORAGE_KEYS.PATIENTS, MOCK_PATIENTS);
         const filtered = list.filter((p: any) => p.id !== result.id && p.mrn !== result.mrn);
         filtered.unshift(result);
         storage.set(STORAGE_KEYS.PATIENTS, filtered);
+      } else if (k.includes('staff') || k.includes('profile')) {
+        const list = storage.get(STORAGE_KEYS.USERS, MOCK_USERS);
+        const filtered = list.filter((u: any) => u.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.USERS, filtered);
       } else if (k.includes('appointment')) {
         const list = storage.get(STORAGE_KEYS.APPOINTMENTS, MOCK_APPOINTMENTS);
         const filtered = list.filter((a: any) => a.id !== result.id);
@@ -1271,10 +1732,19 @@ function updateLocalCacheOnMutation(key: string, args: any[], result: any) {
         const filtered = list.filter((t: any) => t.id !== result.id);
         filtered.unshift(result);
         storage.set(STORAGE_KEYS.LAB_TEST_ORDERS, filtered);
+      } else if (k.includes('pharmacy') || k.includes('inventory')) {
+        const list = storage.get(STORAGE_KEYS.INVENTORY, MOCK_INVENTORY);
+        const filtered = list.filter((p: any) => p.id !== result.id);
+        filtered.unshift(result);
+        storage.set(STORAGE_KEYS.INVENTORY, filtered);
       }
     } else if (key.startsWith('update')) {
       const id = args[0];
-      if (k.includes('bed')) {
+      if (k.includes('staff') || k.includes('profile')) {
+        const list = storage.get(STORAGE_KEYS.USERS, MOCK_USERS);
+        const updated = list.map((u: any) => u.id === id ? { ...u, ...result } : u);
+        storage.set(STORAGE_KEYS.USERS, updated);
+      } else if (k.includes('bed')) {
         const list = storage.get(STORAGE_KEYS.BEDS, MOCK_BEDS);
         const updated = list.map((b: any) => b.id === result.id ? result : b);
         storage.set(STORAGE_KEYS.BEDS, updated);
@@ -1290,6 +1760,10 @@ function updateLocalCacheOnMutation(key: string, args: any[], result: any) {
         const list = storage.get('hms_admissions', []);
         const updated = list.map((p: any) => p.id === result.id ? result : p);
         storage.set('hms_admissions', updated);
+      } else if (k.includes('pharmacy') || k.includes('inventory')) {
+        const list = storage.get(STORAGE_KEYS.INVENTORY, MOCK_INVENTORY);
+        const updated = list.map((p: any) => p.id === result.id ? result : p);
+        storage.set(STORAGE_KEYS.INVENTORY, updated);
       }
     } else if (key.startsWith('delete')) {
       const id = args[0];
@@ -1345,6 +1819,10 @@ function updateLocalCacheOnMutation(key: string, args: any[], result: any) {
         const list = storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
         const filtered = list.filter((s: any) => s.id !== id);
         storage.set('hms_nurse_shifts', filtered);
+      } else if (k.includes('pharmacy') || k.includes('inventory')) {
+        const list = storage.get(STORAGE_KEYS.INVENTORY, MOCK_INVENTORY);
+        const filtered = list.filter((p: any) => p.id !== id);
+        storage.set(STORAGE_KEYS.INVENTORY, filtered);
       }
     }
   } catch (err) {
@@ -1356,7 +1834,7 @@ function executeOfflineMutation(key: string, args: any[]): any {
   const k = key.toLowerCase();
   
   try {
-    if (key.startsWith('create') || key.startsWith('add') || key.startsWith('record')) {
+    if (key.startsWith('create') || key.startsWith('add') || key.startsWith('record') || key === 'updateVitals') {
       const item = args[0] || {};
       if (!item.id) {
         item.id = 'off-' + Math.random().toString(36).substring(2, 9);
@@ -1438,12 +1916,25 @@ function executeOfflineMutation(key: string, args: any[]): any {
         const list = storage.get('hms_nursing_handovers', []);
         list.unshift(item);
         storage.set('hms_nursing_handovers', list);
+      } else if (k.includes('staff') || k.includes('profile')) {
+        const list = storage.get(STORAGE_KEYS.USERS, MOCK_USERS);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.USERS, list);
+      } else if (k === 'loginventorytransaction') {
+        const list = storage.get('hms_inventory_transactions', []);
+        list.unshift(item);
+        storage.set('hms_inventory_transactions', list);
+      } else if (k.includes('pharmacy') || k.includes('inventory')) {
+        const list = storage.get(STORAGE_KEYS.INVENTORY, MOCK_INVENTORY);
+        list.unshift(item);
+        storage.set(STORAGE_KEYS.INVENTORY, list);
       }
       
       let concept = 'general';
       if (k.includes('patient')) concept = 'patients';
       else if (k.includes('appointment')) concept = 'appointments';
       else if (k.includes('bed')) concept = 'beds';
+      else if (k.includes('staff') || k.includes('profile')) concept = 'profiles';
       broadcastDataMutation(concept, 'insert');
       return item;
     }
@@ -1490,6 +1981,27 @@ function executeOfflineMutation(key: string, args: any[]): any {
         if (index !== -1) {
           list[index] = { ...list[index], ...updates };
           storage.set('hms_admissions', list);
+          return list[index];
+        }
+      }
+
+      if (k.includes('staff') || k.includes('profile')) {
+        const list = storage.get(STORAGE_KEYS.USERS, MOCK_USERS);
+        const index = list.findIndex((u: any) => u.id === id);
+        if (index !== -1) {
+          list[index] = { ...list[index], ...updates };
+          storage.set(STORAGE_KEYS.USERS, list);
+          broadcastDataMutation('profiles', 'update');
+          return list[index];
+        }
+      }
+
+      if (k.includes('pharmacy') || k.includes('inventory')) {
+        const list = storage.get(STORAGE_KEYS.INVENTORY, MOCK_INVENTORY);
+        const index = list.findIndex((p: any) => p.id === id);
+        if (index !== -1) {
+          list[index] = { ...list[index], ...updates };
+          storage.set(STORAGE_KEYS.INVENTORY, list);
           return list[index];
         }
       }
@@ -1551,6 +2063,15 @@ function executeOfflineMutation(key: string, args: any[]): any {
         const list = storage.get('hms_nurse_shifts', MOCK_NURSE_SHIFTS);
         const filtered = list.filter((s: any) => s.id !== id);
         storage.set('hms_nurse_shifts', filtered);
+      } else if (k.includes('staff') || k.includes('profile')) {
+        const list = storage.get(STORAGE_KEYS.USERS, MOCK_USERS);
+        const filtered = list.filter((u: any) => u.id !== id);
+        storage.set(STORAGE_KEYS.USERS, filtered);
+        broadcastDataMutation('profiles', 'delete');
+      } else if (k.includes('pharmacy') || k.includes('inventory')) {
+        const list = storage.get(STORAGE_KEYS.INVENTORY, MOCK_INVENTORY);
+        const filtered = list.filter((p: any) => p.id !== id);
+        storage.set(STORAGE_KEYS.INVENTORY, filtered);
       }
       return true;
     }
@@ -1624,9 +2145,68 @@ function executeOfflineQuery(key: string, args: any[]): any {
 }
 
 let supabaseUnreachable = false;
+let connectionCheckPromise: Promise<boolean> | null = null;
+let lastCheckTime = 0;
+const CHECK_COOLDOWN_MS = 6000; // Cooldown of 6 seconds between connection checks if offline
+
+function isNetworkFailure(err: any): boolean {
+  if (!err) return false;
+  // If we have a PostgreSQL specific error code, it means we reached the server and it rejected the query
+  if (err.code) return false;
+  const msg = (err.message || '').toLowerCase();
+  return (
+    msg.includes('timeout') ||
+    msg.includes('fetch') ||
+    msg.includes('network') ||
+    msg.includes('unreachable') ||
+    msg.includes('failed to connect') ||
+    msg.includes('connection refused') ||
+    msg.includes('abort')
+  );
+}
+
+export async function checkConnection(): Promise<boolean> {
+  if (!isSupabaseConfigured) return false;
+  
+  const now = Date.now();
+  if (supabaseUnreachable && (now - lastCheckTime < CHECK_COOLDOWN_MS)) {
+    return false;
+  }
+  
+  if (connectionCheckPromise) {
+    return connectionCheckPromise;
+  }
+  
+  lastCheckTime = now;
+  connectionCheckPromise = (async () => {
+    try {
+      const rawPromise = supabase.from('hospital_info').select('id').limit(1);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Network check timed out")), 1500);
+      });
+      await Promise.race([rawPromise, timeoutPromise]);
+      supabaseUnreachable = false;
+      return true;
+    } catch (err: any) {
+      if (isNetworkFailure(err)) {
+        supabaseUnreachable = true;
+        return false;
+      }
+      // If it is a SQL/permission error but not network, it is still reachable!
+      supabaseUnreachable = false;
+      return true;
+    } finally {
+      connectionCheckPromise = null;
+    }
+  })();
+  
+  return connectionCheckPromise;
+}
+
 if (typeof window !== 'undefined') {
   const resetUnreachable = () => {
     supabaseUnreachable = false;
+    connectionCheckPromise = null;
   };
   window.addEventListener('storage', resetUnreachable);
   window.addEventListener('supabase-config-change', resetUnreachable);
@@ -1647,7 +2227,8 @@ for (const [key, value] of Object.entries(rawSupabaseService)) {
     
     if (isMutation) {
       syncWrappedService[key] = async function(...args: any[]) {
-        if (!isSupabaseConfigured || supabaseUnreachable) {
+        const isOnline = await checkConnection();
+        if (!isOnline) {
           return executeOfflineMutation(key, args);
         }
 
@@ -1694,16 +2275,27 @@ for (const [key, value] of Object.entries(rawSupabaseService)) {
             return executeOfflineMutation(key, args);
           }
         } catch (err: any) {
-          console.warn(`Mutation ${key} failed, executing in offline mode:`, err.message || err);
-          supabaseUnreachable = true;
-          toastSlowConnection();
-          return executeOfflineMutation(key, args);
+          console.warn(`Mutation ${key} failed:`, err.message || err);
+          const msg = (err.message || '').toLowerCase();
+          const isSchemaOrConnectionIssue = isNetworkFailure(err) || 
+            msg.includes('does not exist') || 
+            msg.includes('foreign key') || 
+            msg.includes('violates');
+          
+          if (isSchemaOrConnectionIssue) {
+            supabaseUnreachable = true;
+            toastSlowConnection();
+            return executeOfflineMutation(key, args);
+          }
+          // For actual validation errors (like checklist failures), show the error so they know.
+          return null;
         }
       };
     } else if (key.startsWith('get')) {
       // It's a query method (getPatients, etc.)
       syncWrappedService[key] = async function(...args: any[]) {
-        if (!isSupabaseConfigured || supabaseUnreachable) {
+        const isOnline = await checkConnection();
+        if (!isOnline) {
           return executeOfflineQuery(key, args);
         }
 
@@ -1721,11 +2313,21 @@ for (const [key, value] of Object.entries(rawSupabaseService)) {
             timeoutPromise
           ]);
 
-          if (result) {
+          let finalResult = result;
+          if (finalResult) {
             if (config) {
-              storage.set(config.storageKey, result);
+              const cached = storage.get(config.storageKey, []);
+              if (Array.isArray(cached) && Array.isArray(finalResult)) {
+                const offlineItems = cached.filter((item: any) => item && item.id && String(item.id).startsWith('off-'));
+                if (offlineItems.length > 0) {
+                  const existingIds = new Set(finalResult.map((item: any) => item && item.id));
+                  const offlineToKeep = offlineItems.filter((item: any) => item && item.id && !existingIds.has(item.id));
+                  finalResult = [...offlineToKeep, ...finalResult];
+                }
+              }
+              storage.set(config.storageKey, finalResult);
             }
-            return result;
+            return finalResult;
           } else {
             console.warn(`Query ${key} returned falsy value indicating search or fetch failure. Falling back to cached local storage.`);
             supabaseUnreachable = true;
@@ -1736,8 +2338,10 @@ for (const [key, value] of Object.entries(rawSupabaseService)) {
             return null;
           }
         } catch (err: any) {
-          console.warn(`Query ${key} timed out or failed, falling back to local cache:`, err.message || err);
-          supabaseUnreachable = true;
+          console.warn(`Query ${key} timed out or failed:`, err.message || err);
+          if (isNetworkFailure(err)) {
+            supabaseUnreachable = true;
+          }
           
           if (config) {
             toastSlowConnection();
@@ -1778,6 +2382,7 @@ export function getSupabaseUnreachable() {
 export function setSupabaseUnreachable(val: boolean) {
   supabaseUnreachable = val;
   if (!val) {
+    connectionCheckPromise = null;
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('supabase-config-change'));
     }
@@ -1791,6 +2396,7 @@ export async function syncOfflineDataWithSupabase() {
 
   // Force connection attempt by resetting the unreachable state
   supabaseUnreachable = false;
+  connectionCheckPromise = null;
   let syncCount = 0;
   const errors: string[] = [];
 
@@ -1847,9 +2453,10 @@ export async function syncOfflineDataWithSupabase() {
           aptData.patient_id = idMap[aptData.patient_id];
         }
 
+        const dbAptData = cleanAppointmentForPostgres(aptData);
         const { data, error } = await supabase
           .from('appointments')
-          .insert([aptData])
+          .insert([dbAptData])
           .select();
 
         if (error) throw error;
@@ -1945,9 +2552,10 @@ export async function syncOfflineDataWithSupabase() {
           vData.patient_id = idMap[vData.patient_id];
         }
 
+        const dbVData = cleanVitalsForPostgres(vData);
         const { data, error } = await supabase
           .from('patient_vitals')
-          .insert([vData])
+          .insert([dbVData])
           .select();
 
         if (error) throw error;
@@ -2003,16 +2611,17 @@ export async function syncOfflineDataWithSupabase() {
     for (const s of offlineOtSchedules) {
       try {
         const sData = { ...s };
-        delete sData.id;
-        delete sData.patients;
-        
         if (idMap[sData.patient_id]) {
           sData.patient_id = idMap[sData.patient_id];
+        } else if (idMap[sData.patientId]) {
+          sData.patientId = idMap[sData.patientId];
         }
+        
+        const cleaned = cleanOTScheduleForPostgres(sData);
 
         const { data, error } = await supabase
           .from('ot_schedules')
-          .insert([sData])
+          .insert([cleaned])
           .select();
 
         if (error) throw error;
@@ -2046,9 +2655,10 @@ export async function syncOfflineDataWithSupabase() {
           invData.patient_id = idMap[invData.patient_id];
         }
 
+        const dbInvData = cleanInvoiceForPostgres(invData);
         const { data, error } = await supabase
           .from('invoices')
-          .insert([invData])
+          .insert([dbInvData])
           .select();
 
         if (error) throw error;
@@ -2063,7 +2673,8 @@ export async function syncOfflineDataWithSupabase() {
             try {
               const itemData = { ...item, invoice_id: newInvoiceId };
               delete itemData.id;
-              await supabase.from('invoice_items').insert([itemData]);
+              const dbItemData = cleanInvoiceItemForPostgres(itemData);
+              await supabase.from('invoice_items').insert([dbItemData]);
             } catch (itErr) {
               console.warn('Silent item sync failure:', itErr);
             }
@@ -2173,6 +2784,84 @@ export async function syncOfflineDataWithSupabase() {
       return lr;
     });
     storage.set(STORAGE_KEYS.LAB_TEST_ORDERS, updatedLabRequests);
+
+    // 12. Sync Pharmacy Items / Inventory
+    const pharmacyItems = storage.get(STORAGE_KEYS.INVENTORY, []);
+    const offlinePharmacyItems = pharmacyItems.filter((item: any) => item.id && String(item.id).startsWith('off-'));
+    for (const item of offlinePharmacyItems) {
+      try {
+        const itemData = { ...item };
+        delete itemData.id;
+
+        const dbItemData = cleanPharmacyItemForPostgres(itemData);
+        const data = await selfHealingQuery('insert', 'pharmacy_items', dbItemData);
+        if (data && data[0]) {
+          idMap[item.id] = data[0].id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Pharmacy Item: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedPharmacyItems = pharmacyItems.map((item: any) => {
+      if (idMap[item.id]) {
+        return mapPharmacyItemFromPostgres({ ...item, id: idMap[item.id] });
+      }
+      return item;
+    });
+    storage.set(STORAGE_KEYS.INVENTORY, updatedPharmacyItems);
+
+    // 13. Sync Staff
+    const staffList = storage.get(STORAGE_KEYS.USERS, []);
+    const offlineStaffList = staffList.filter((s: any) => s.id && String(s.id).startsWith('off-'));
+    for (const s of offlineStaffList) {
+      try {
+        const staffData = { ...s };
+        delete staffData.id;
+
+        const dbResult = await rawSupabaseService.createStaff(staffData);
+        if (dbResult && dbResult.id) {
+          idMap[s.id] = dbResult.id;
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Staff: ${err.message || JSON.stringify(err)}`);
+      }
+    }
+    const updatedStaffList = staffList.map((s: any) => {
+      if (idMap[s.id]) {
+        return {
+          ...s,
+          id: idMap[s.id],
+          avatar: s.avatar_url || s.avatar
+        };
+      }
+      return s;
+    });
+    storage.set(STORAGE_KEYS.USERS, updatedStaffList);
+
+    // 14. Sync Inventory Transactions
+    const txList = storage.get('hms_inventory_transactions', []);
+    const offlineTxList = txList.filter((tx: any) => tx.id && String(tx.id).startsWith('off-'));
+    for (const tx of offlineTxList) {
+      try {
+        const txData = { ...tx };
+        delete txData.id;
+        if (txData.item_id && idMap[txData.item_id]) {
+          txData.item_id = idMap[txData.item_id];
+        }
+        if (txData.performed_by && idMap[txData.performed_by]) {
+          txData.performed_by = idMap[txData.performed_by];
+        }
+
+        const { error } = await supabase.from('inventory_transactions').insert([txData]);
+        if (!error) {
+          syncCount++;
+        }
+      } catch (err: any) {
+        errors.push(`Inventory Transaction: ${err.message || JSON.stringify(err)}`);
+      }
+    }
 
     // Broadcast synchronization updates to any other connected devices
     broadcastDataMutation('all', 'sync');

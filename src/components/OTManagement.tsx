@@ -97,11 +97,15 @@ export default function OTManagement() {
   };
 
   const filteredRecords = records.filter(record => {
-    const patient = patients.find(p => p.id === record.patientId);
+    const recordPatientId = record.patientId || record.patient_id;
+    const patient = patients.find(p => p.id === recordPatientId);
+    const operationName = record.operationName || record.operation_name || '';
+    const query = searchQuery.toLowerCase();
+    
     return (
-      record.operationName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      patient?.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      patient?.mrn.toLowerCase().includes(searchQuery.toLowerCase())
+      operationName.toLowerCase().includes(query) ||
+      (patient?.name || '').toLowerCase().includes(query) ||
+      (patient?.mrn || '').toLowerCase().includes(query)
     );
   });
 
@@ -214,12 +218,12 @@ export default function OTManagement() {
                   {showPatientResults && patientSearchTerm.length > 0 && (
                     <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-[200px] overflow-y-auto custom-scrollbar">
                       {patients.filter(p => 
-                        p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
-                        p.phone.includes(patientSearchTerm)
+                        (p.name || '').toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
+                        (p.phone || '').includes(patientSearchTerm)
                       ).length > 0 ? (
                         patients.filter(p => 
-                          p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
-                          p.phone.includes(patientSearchTerm)
+                          (p.name || '').toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
+                          (p.phone || '').includes(patientSearchTerm)
                         ).map(p => (
                           <div 
                             key={p.id} 
@@ -418,7 +422,7 @@ export default function OTManagement() {
                         <div className="flex items-center gap-4">
                           <Avatar className="w-12 h-12 rounded-xl">
                             <AvatarFallback className="bg-slate-100 text-medical-blue font-bold text-lg rounded-xl">
-                              {patient?.name.charAt(0) || 'P'}
+                              {patient?.name?.charAt(0) || 'P'}
                             </AvatarFallback>
                           </Avatar>
                           <div>

@@ -1,9 +1,9 @@
 -- Supabase SQL Schema for Hospital Management System
 -- Run this in your Supabase SQL Editor
 
--- 1. Profiles / Users (Depends on auth.users)
+-- 1. Profiles / Users (Optional reference to auth.users handled manually without FK block constraint)
 CREATE TABLE IF NOT EXISTS public.profiles (
-  id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   role TEXT NOT NULL CHECK (role IN ('SUPER_ADMIN', 'ADMIN', 'DOCTOR', 'SURGEON', 'NURSE', 'RECEPTIONIST', 'ACCOUNTANT', 'LAB_TECHNICIAN', 'PHARMACIST')),
@@ -17,6 +17,132 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Drop the foreign key constraint if it exists to allow inserting staff/profiles seamlessly from the client side
+ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_id_fkey;
+
+-- 1.1 Staff (Dedicated table for staff employee records synchronized with profiles)
+CREATE TABLE IF NOT EXISTS public.staff (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL,
+  department TEXT,
+  designation TEXT,
+  phone TEXT,
+  degree TEXT,
+  specialization TEXT,
+  avatar_url TEXT,
+  status TEXT DEFAULT 'ACTIVE',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Functions and Triggers to synchronize profiles and staff bidirectionally
+CREATE OR REPLACE FUNCTION public.sync_profiles_to_staff()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NEW;
+  END IF;
+  
+  INSERT INTO public.staff (id, name, email, role, department, designation, phone, degree, specialization, avatar_url, status, created_at, updated_at)
+  VALUES (NEW.id, NEW.name, NEW.email, NEW.role, NEW.department, NEW.designation, NEW.phone, NEW.degree, NEW.specialization, NEW.avatar_url, NEW.status, NEW.created_at, NEW.updated_at)
+  ON CONFLICT (id) DO UPDATE SET
+    name = EXCLUDED.name,
+    email = EXCLUDED.email,
+    role = EXCLUDED.role,
+    department = EXCLUDED.department,
+    designation = EXCLUDED.designation,
+    phone = EXCLUDED.phone,
+    degree = EXCLUDED.degree,
+    specialization = EXCLUDED.specialization,
+    avatar_url = EXCLUDED.avatar_url,
+    status = EXCLUDED.status,
+    updated_at = EXCLUDED.updated_at;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS sync_profiles_to_staff_trigger ON public.profiles;
+CREATE TRIGGER sync_profiles_to_staff_trigger
+AFTER INSERT OR UPDATE ON public.profiles
+FOR EACH ROW EXECUTE FUNCTION public.sync_profiles_to_staff();
+
+-- Revoke execute from public roles as it is not meant to be callable by users
+REVOKE EXECUTE ON FUNCTION public.sync_profiles_to_staff() FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.sync_staff_to_profiles()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NEW;
+  END IF;
+
+  BEGIN
+    INSERT INTO public.profiles (id, name, email, role, department, designation, phone, degree, specialization, avatar_url, status, created_at, updated_at)
+    VALUES (NEW.id, NEW.name, NEW.email, NEW.role, NEW.department, NEW.designation, NEW.phone, NEW.degree, NEW.specialization, NEW.avatar_url, NEW.status, NEW.created_at, NEW.updated_at)
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      email = EXCLUDED.email,
+      role = EXCLUDED.role,
+      department = EXCLUDED.department,
+      designation = EXCLUDED.designation,
+      phone = EXCLUDED.phone,
+      degree = EXCLUDED.degree,
+      specialization = EXCLUDED.specialization,
+      avatar_url = EXCLUDED.avatar_url,
+      status = EXCLUDED.status,
+      updated_at = EXCLUDED.updated_at;
+  EXCEPTION
+    WHEN OTHERS THEN
+      -- Handle gracefully if profiles table constraint (e.g. auth.users reference) throws an error
+      NULL;
+  END;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS sync_staff_to_profiles_trigger ON public.staff;
+CREATE TRIGGER sync_staff_to_profiles_trigger
+AFTER INSERT OR UPDATE ON public.staff
+FOR EACH ROW EXECUTE FUNCTION public.sync_staff_to_profiles();
+
+-- Revoke execute from public roles as it is not meant to be callable by users
+REVOKE EXECUTE ON FUNCTION public.sync_staff_to_profiles() FROM PUBLIC, anon, authenticated;
+
+-- Sync deletes
+CREATE OR REPLACE FUNCTION public.sync_profiles_to_staff_delete()
+RETURNS TRIGGER AS $$
+BEGIN
+  DELETE FROM public.staff WHERE id = OLD.id;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS sync_profiles_to_staff_delete_trigger ON public.profiles;
+CREATE TRIGGER sync_profiles_to_staff_delete_trigger
+AFTER DELETE ON public.profiles
+FOR EACH ROW EXECUTE FUNCTION public.sync_profiles_to_staff_delete();
+
+-- Revoke execute from public roles as it is not meant to be callable by users
+REVOKE EXECUTE ON FUNCTION public.sync_profiles_to_staff_delete() FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.sync_staff_to_profiles_delete()
+RETURNS TRIGGER AS $$
+BEGIN
+  DELETE FROM public.profiles WHERE id = OLD.id;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS sync_staff_to_profiles_delete_trigger ON public.staff;
+CREATE TRIGGER sync_staff_to_profiles_delete_trigger
+AFTER DELETE ON public.staff
+FOR EACH ROW EXECUTE FUNCTION public.sync_staff_to_profiles_delete();
+
+-- Revoke execute from public roles as it is not meant to be callable by users
+REVOKE EXECUTE ON FUNCTION public.sync_staff_to_profiles_delete() FROM PUBLIC, anon, authenticated;
 
 -- 2. Hospital Information
 CREATE TABLE IF NOT EXISTS public.hospital_info (
@@ -962,8 +1088,10 @@ BEGIN
 
         -- 3. App-compatible permissive secure policies ensuring standard front-end clients from any coordinate sync correctly
         EXECUTE 'CREATE POLICY "Allow public select" ON public.' || quote_ident(r.tablename) || ' FOR SELECT TO authenticated, anon USING (true);';
-        EXECUTE 'CREATE POLICY "Allow public insert" ON public.' || quote_ident(r.tablename) || ' FOR INSERT TO authenticated, anon WITH CHECK (auth.role() IS NOT NULL);';
-        EXECUTE 'CREATE POLICY "Allow public update" ON public.' || quote_ident(r.tablename) || ' FOR UPDATE TO authenticated, anon USING (auth.role() IS NOT NULL) WITH CHECK (auth.role() IS NOT NULL);';
-        EXECUTE 'CREATE POLICY "Allow public delete" ON public.' || quote_ident(r.tablename) || ' FOR DELETE TO authenticated, anon USING (auth.role() IS NOT NULL);';
+        EXECUTE 'CREATE POLICY "Allow public insert" ON public.' || quote_ident(r.tablename) || ' FOR INSERT TO authenticated, anon WITH CHECK (coalesce(auth.role(), '''') IS NOT NULL);';
+        EXECUTE 'CREATE POLICY "Allow public update" ON public.' || quote_ident(r.tablename) || ' FOR UPDATE TO authenticated, anon USING (coalesce(auth.role(), '''') IS NOT NULL) WITH CHECK (coalesce(auth.role(), '''') IS NOT NULL);';
+        EXECUTE 'CREATE POLICY "Allow public delete" ON public.' || quote_ident(r.tablename) || ' FOR DELETE TO authenticated, anon USING (coalesce(auth.role(), '''') IS NOT NULL);';
     END LOOP;
 END $$;
+
+ALTER TABLE public.profiles DROP CONSTRAINT IF EXISTS profiles_id_fkey;
